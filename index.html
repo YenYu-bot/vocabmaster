@@ -100,7 +100,8 @@ async function markSR(wordId, remembered) {
 
 async function loadAll() {
   const [cs, ws] = await Promise.all([getAll('courses'), getAll('words')]);
-  AC = cs.sort((a,b) => (a.createdAt||0) - (b.createdAt||0));
+  // sort by sortOrder first, fallback to createdAt
+  AC = cs.sort((a,b) => (a.sortOrder??a.createdAt??0) - (b.sortOrder??b.createdAt??0));
   AW = ws.sort((a,b) => (a.createdAt||0) - (b.createdAt||0));
 }
 
@@ -753,12 +754,65 @@ window.addCourse = async function(inputId) {
   } catch(e){alert('新增失敗：'+e.message);}
 };
 async function renderAdminCourses() {
-  const list=document.getElementById('admin-course-list'); list.innerHTML='';
-  if(!AC.length){list.innerHTML='<p class="text-muted text-sm" style="padding:8px">尚無課程</p>';return;}
-  AC.forEach(c=>{
-    const ws=AW.filter(w=>w.cid===c.id);
-    const row=document.createElement('div'); row.className='course-row';
-    row.innerHTML=`<div style="flex:1"><div class="bold text-sm">${c.name}</div><div class="text-muted" style="font-size:12px">${ws.length} 個單字</div></div><button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deleteCourse('${c.id}')">刪除</button>`;
+  const list = document.getElementById('admin-course-list');
+  list.innerHTML = '';
+  if (!AC.length) { list.innerHTML='<p class="text-muted text-sm" style="padding:8px">尚無課程</p>'; return; }
+
+  const hint = document.createElement('p');
+  hint.className = 'text-muted text-sm mb8';
+  hint.innerHTML = '☰ 拖曳左側圖示可調整順序';
+  list.appendChild(hint);
+
+  let dragSrc = null;
+
+  AC.forEach((c, idx) => {
+    const ws = AW.filter(w => w.cid===c.id);
+    const row = document.createElement('div');
+    row.className = 'course-row';
+    row.draggable = true;
+    row.dataset.id = c.id;
+    row.style.cursor = 'default';
+    row.innerHTML = `
+      <div style="padding:0 8px 0 2px;cursor:grab;color:var(--muted);font-size:18px;user-select:none" title="拖曳排序">☰</div>
+      <div style="flex:1">
+        <div class="bold text-sm">${c.name}</div>
+        <div class="text-muted" style="font-size:12px">${ws.length} 個單字</div>
+      </div>
+      <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deleteCourse('${c.id}')">刪除</button>`;
+
+    row.addEventListener('dragstart', e => {
+      dragSrc = row;
+      e.dataTransfer.effectAllowed = 'move';
+      row.style.opacity = '0.4';
+    });
+    row.addEventListener('dragend', () => {
+      row.style.opacity = '1';
+      list.querySelectorAll('.course-row').forEach(r => r.style.borderTop = '');
+    });
+    row.addEventListener('dragover', e => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      list.querySelectorAll('.course-row').forEach(r => r.style.borderTop = '');
+      if (row !== dragSrc) row.style.borderTop = '2px solid var(--brand)';
+    });
+    row.addEventListener('dragleave', () => { row.style.borderTop = ''; });
+    row.addEventListener('drop', async e => {
+      e.preventDefault();
+      row.style.borderTop = '';
+      if (!dragSrc || dragSrc===row) return;
+      // reorder AC array
+      const srcId = dragSrc.dataset.id;
+      const dstId = row.dataset.id;
+      const srcIdx = AC.findIndex(c => c.id===srcId);
+      const dstIdx = AC.findIndex(c => c.id===dstId);
+      const [moved] = AC.splice(srcIdx, 1);
+      AC.splice(dstIdx, 0, moved);
+      // save new sortOrder to Firebase
+      await Promise.all(AC.map((c, i) => updateOne('courses', c.id, { sortOrder: i })));
+      renderAdminCourses();
+      loadSC(); loadQC(); updateFC(); updateIC();
+    });
+
     list.appendChild(row);
   });
 }
