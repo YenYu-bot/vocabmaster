@@ -407,18 +407,63 @@ window.renderWords = function() {
   const fc=document.getElementById('filter-course')?.value||'';
   const list=document.getElementById('word-list'); list.innerHTML='';
   const f=AW.filter(w=>(!q||w.en.toLowerCase().includes(q)||w.zh.includes(q))&&(!fc||w.cid===fc));
-  if(!f.length){list.innerHTML='<p class="text-muted text-sm" style="padding:10px 0">無符合單字</p>';return;}
+  if(!f.length){list.innerHTML='<p class="text-muted text-sm" style="padding:10px 0">無符合單字</p>'; updateBatchBar(); return;}
   f.forEach(w=>{
     const c=AC.find(x=>x.id===w.cid);
-    const row=document.createElement('div'); row.style.cssText='display:flex;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid var(--border)';
-    row.innerHTML=`<div style="flex:1"><div class="flex gap8"><span class="bold text-sm">${w.en}</span><span class="tag tag-a" style="font-size:11px">${w.pos||''}</span></div><div class="text-muted" style="font-size:12px">${w.zh}${c?' · '+c.name:''}</div></div><button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger);flex-shrink:0" onclick="deleteWord('${w.id}')">刪除</button>`;
+    const row=document.createElement('div');
+    row.style.cssText='display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--border)';
+    row.innerHTML=`
+      <input type="checkbox" class="word-cb" data-id="${w.id}"
+        style="width:16px;height:16px;flex-shrink:0;cursor:pointer;accent-color:var(--brand)"
+        onchange="updateBatchBar()"/>
+      <div style="flex:1">
+        <div class="flex gap8">
+          <span class="bold text-sm">${w.en}</span>
+          <span class="tag tag-a" style="font-size:11px">${w.pos||''}</span>
+        </div>
+        <div class="text-muted" style="font-size:12px">${w.zh}${c?' · '+c.name:''}</div>
+      </div>
+      <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger);flex-shrink:0" onclick="deleteWord('${w.id}')">刪除</button>`;
     list.appendChild(row);
   });
+  updateBatchBar();
 };
+
+window.updateBatchBar = function() {
+  const checked = document.querySelectorAll('.word-cb:checked');
+  const total = document.querySelectorAll('.word-cb');
+  const bar = document.getElementById('batch-bar');
+  const allCb = document.getElementById('select-all-cb');
+  if(!bar) return;
+  if(checked.length > 0) {
+    bar.style.display='flex';
+    document.getElementById('batch-count').textContent = '已選 '+checked.length+' 個';
+  } else {
+    bar.style.display='none';
+  }
+  if(allCb) allCb.indeterminate = checked.length>0 && checked.length<total.length;
+  if(allCb) allCb.checked = total.length>0 && checked.length===total.length;
+};
+
+window.toggleSelectAll = function(cb) {
+  document.querySelectorAll('.word-cb').forEach(c=>c.checked=cb.checked);
+  updateBatchBar();
+};
+
 window.deleteWord = async function(id) {
   if(!confirm('確定刪除此單字？'))return;
   await delOne('words', id);
   AW=AW.filter(w=>w.id!==id); window.renderWords();
+};
+
+window.deleteSelected = async function() {
+  const checked = [...document.querySelectorAll('.word-cb:checked')];
+  if(!checked.length) return;
+  if(!confirm('確定刪除選取的 '+checked.length+' 個單字？')) return;
+  const ids = checked.map(c=>c.dataset.id);
+  await Promise.all(ids.map(id=>delOne('words',id)));
+  AW=AW.filter(w=>!ids.includes(w.id));
+  window.renderWords();
 };
 window.importWords = async function() {
   const cid=document.getElementById('import-course').value;
@@ -427,20 +472,18 @@ window.importWords = async function() {
   if(!cid||!text){msg.innerHTML='<div class="notice notice-i">請選擇課程並輸入單字</div>';return;}
   const rows=[];
 
-  // 格式一：逗號分隔「英文, 中文, 詞性, 例句」（每行一個）
-  const isCommaFormat = text.includes(',') && (text.split('\n').length > 1 || text.split(',').length >= 2);
+  // 格式一：| 分隔「英文 | 中文 | 詞性 | 例句」（每行一個，例句可含逗號）
+  // 格式二：逗號分隔「英文, 中文, 詞性, 例句」（例句不能含逗號）
+  // 格式三：連續字串「1gender n.[U] 性別2gap...」
 
-  // 格式二：連續字串「1gender n.[U] 性別2gap...」
   const isContinuousFormat = /\d+[a-zA-Z]/.test(text) && !text.includes('\n');
+  const isPipeFormat = text.includes('|');
 
   if (isContinuousFormat) {
-    // 用數字做分隔點切割，例如 1gender... 2gap...
     const parts = text.split(/(?=\d+[a-zA-Z(（])/);
     parts.forEach(part => {
       if (!part.trim()) return;
-      // 移除開頭數字
       const noNum = part.replace(/^\d+/, '').trim();
-      // 嘗試抓詞性 (n./v./adj./adv./vi./vt./prep. 等)
       const posMatch = noNum.match(/((?:vi\.|vt\.|n\.|v\.|adj\.|adv\.|prep\.|conj\.|pron\.|int\.)[^　\u4e00-\u9fff]*)/);
       if (posMatch) {
         const posIdx = noNum.indexOf(posMatch[0]);
@@ -449,7 +492,6 @@ window.importWords = async function() {
         const zh = noNum.slice(posIdx + posMatch[0].length).trim();
         if (en && zh) rows.push({id:'w'+Date.now()+Math.random().toString(36).slice(2,7), en, zh, pos, ex:'', cid, createdAt:Date.now()});
       } else {
-        // 沒有詞性，用第一個中文字元切割
         const zhStart = noNum.search(/[\u4e00-\u9fff（(]/);
         if (zhStart > 0) {
           const en = noNum.slice(0, zhStart).trim();
@@ -458,12 +500,22 @@ window.importWords = async function() {
         }
       }
     });
-  } else {
-    // 格式一：逗號分隔，每行一個
+  } else if (isPipeFormat) {
+    // | 分隔格式，例句可含逗號
     text.split('\n').forEach(line=>{
-      const p=line.split(',').map(s=>s.trim());
-      if(p.length<2||!p[0])return;
+      if(!line.trim()) return;
+      const p = line.split('|').map(s=>s.trim());
+      if(p.length<2||!p[0]) return;
       rows.push({id:'w'+Date.now()+Math.random().toString(36).slice(2,7), en:p[0], zh:p[1], pos:p[2]||'', ex:p[3]||'', cid, createdAt:Date.now()});
+    });
+  } else {
+    // 逗號分隔（僅適合無逗號例句）
+    text.split('\n').forEach(line=>{
+      const p = line.split(',').map(s=>s.trim());
+      if(p.length<2||!p[0]) return;
+      // 第4欄之後全部合併為例句（避免例句內逗號被切斷）
+      const ex = p.slice(3).join(',').trim();
+      rows.push({id:'w'+Date.now()+Math.random().toString(36).slice(2,7), en:p[0], zh:p[1], pos:p[2]||'', ex, cid, createdAt:Date.now()});
     });
   }
 
@@ -704,10 +756,18 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
       <input id="search-word" class="mb0" placeholder="搜尋單字..." style="flex:1" oninput="renderWords()"/>
       <select id="filter-course" class="mb0" style="width:auto;margin-left:8px" onchange="renderWords()"><option value="">所有課程</option></select>
     </div>
+    <div class="flex gap8 mb8" style="align-items:center">
+      <input type="checkbox" id="select-all-cb" style="width:16px;height:16px;cursor:pointer;accent-color:var(--brand)" onchange="toggleSelectAll(this)"/>
+      <span class="text-muted text-sm">全選</span>
+    </div>
+    <div id="batch-bar" style="display:none;align-items:center;justify-content:space-between;background:var(--dl);border-radius:8px;padding:8px 12px;margin-bottom:8px">
+      <span style="font-size:13px;color:var(--danger);font-weight:500" id="batch-count">已選 0 個</span>
+      <button class="btn btn-sm" onclick="deleteSelected()" style="background:var(--danger);color:#fff;border-color:var(--danger)">刪除選取</button>
+    </div>
     <div id="word-list"><div class="loading">載入中...</div></div>
   </div>
   <div id="at-import" style="display:none">
-    <div class="notice notice-i mb12">支援兩種格式：<br>① 逗號格式（每行）：apple, 蘋果, n., 例句<br>② 直接貼上整段文字：1gender n.[U] 性別2gap...</div>
+    <div class="notice notice-i mb12">支援三種格式：<br>① <b>豎線格式（推薦）</b>：apple | 蘋果 | n. | 例句（可含逗號）<br>② 逗號格式：apple, 蘋果, n., 例句（例句不可含逗號）<br>③ 連續貼上：1gender n.[U] 性別2gap...</div>
     <label>所屬課程</label>
     <div class="flex gap8 mb12">
       <select id="import-course" class="mb0" style="flex:1"></select>
