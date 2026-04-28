@@ -285,12 +285,48 @@ window.importWords = async function() {
   const msg=document.getElementById('import-msg');
   if(!cid||!text){msg.innerHTML='<div class="notice notice-i">請選擇課程並輸入單字</div>';return;}
   const rows=[];
-  text.split('\n').forEach(line=>{
-    const p=line.split(',').map(s=>s.trim());
-    if(p.length<2||!p[0])return;
-    rows.push({id:'w'+Date.now()+Math.random().toString(36).slice(2,7), en:p[0], zh:p[1], pos:p[2]||'', ex:p[3]||'', cid, createdAt:Date.now()});
-  });
-  if(!rows.length){msg.innerHTML='<div class="notice notice-i">沒有可匯入的資料</div>';return;}
+
+  // 格式一：逗號分隔「英文, 中文, 詞性, 例句」（每行一個）
+  const isCommaFormat = text.includes(',') && (text.split('\n').length > 1 || text.split(',').length >= 2);
+
+  // 格式二：連續字串「1gender n.[U] 性別2gap...」
+  const isContinuousFormat = /\d+[a-zA-Z]/.test(text) && !text.includes('\n');
+
+  if (isContinuousFormat) {
+    // 用數字做分隔點切割，例如 1gender... 2gap...
+    const parts = text.split(/(?=\d+[a-zA-Z(（])/);
+    parts.forEach(part => {
+      if (!part.trim()) return;
+      // 移除開頭數字
+      const noNum = part.replace(/^\d+/, '').trim();
+      // 嘗試抓詞性 (n./v./adj./adv./vi./vt./prep. 等)
+      const posMatch = noNum.match(/((?:vi\.|vt\.|n\.|v\.|adj\.|adv\.|prep\.|conj\.|pron\.|int\.)[^　\u4e00-\u9fff]*)/);
+      if (posMatch) {
+        const posIdx = noNum.indexOf(posMatch[0]);
+        const en = noNum.slice(0, posIdx).trim();
+        const pos = posMatch[0].trim();
+        const zh = noNum.slice(posIdx + posMatch[0].length).trim();
+        if (en && zh) rows.push({id:'w'+Date.now()+Math.random().toString(36).slice(2,7), en, zh, pos, ex:'', cid, createdAt:Date.now()});
+      } else {
+        // 沒有詞性，用第一個中文字元切割
+        const zhStart = noNum.search(/[\u4e00-\u9fff（(]/);
+        if (zhStart > 0) {
+          const en = noNum.slice(0, zhStart).trim();
+          const zh = noNum.slice(zhStart).trim();
+          if (en && zh) rows.push({id:'w'+Date.now()+Math.random().toString(36).slice(2,7), en, zh, pos:'', ex:'', cid, createdAt:Date.now()});
+        }
+      }
+    });
+  } else {
+    // 格式一：逗號分隔，每行一個
+    text.split('\n').forEach(line=>{
+      const p=line.split(',').map(s=>s.trim());
+      if(p.length<2||!p[0])return;
+      rows.push({id:'w'+Date.now()+Math.random().toString(36).slice(2,7), en:p[0], zh:p[1], pos:p[2]||'', ex:p[3]||'', cid, createdAt:Date.now()});
+    });
+  }
+
+  if(!rows.length){msg.innerHTML='<div class="notice notice-i">沒有可匯入的資料，請確認格式</div>';return;}
   try {
     await Promise.all(rows.map(r=>setOne('words',r.id,r)));
     AW=[...AW,...rows];
@@ -503,7 +539,7 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
     <div id="word-list"><div class="loading">載入中...</div></div>
   </div>
   <div id="at-import" style="display:none">
-    <div class="notice notice-i mb12">格式：每行「英文, 中文, 詞性, 例句（選填）」</div>
+    <div class="notice notice-i mb12">支援兩種格式：<br>① 逗號格式（每行）：apple, 蘋果, n., 例句<br>② 直接貼上整段文字：1gender n.[U] 性別2gap...</div>
     <label>所屬課程</label>
     <div class="flex gap8 mb12">
       <select id="import-course" class="mb0" style="flex:1"></select>
