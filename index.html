@@ -206,6 +206,7 @@ window.startDaily = function() {
   if (dp[today] && dp[today].quizDone) { alert('🎉 今日任務已全部完成！明天再來。'); return; }
   dailyMode = true;
   dailyPhase = 'study';
+  window._dailyForgot = new Set(); // reset forgot tracking
   SW = getDailyWords();
   if (!SW.length) { alert('🎉 今日任務已完成！明天再來。'); return; }
   // lock in today's word IDs (prevents re-counting on repeat)
@@ -266,12 +267,15 @@ window.markKnown = async function() {
     await updateOne('users', CU.name, { known, completed_courses: u.completed_courses, score: u.score });
     document.getElementById('stu-score').textContent = u.score;
   }
-  if (dailyMode) await markSR(w.id, true);
   window.studyNav(1);
 };
 window.markForgot = async function() {
   const w = SW[SI]; if (!w) return;
-  if (dailyMode) await markSR(w.id, false);
+  // track "forgot" words during study phase for SR adjustment after quiz
+  if (dailyMode) {
+    if (!window._dailyForgot) window._dailyForgot = new Set();
+    window._dailyForgot.add(w.id);
+  }
   window.studyNav(1);
 };
 
@@ -406,6 +410,21 @@ async function finishDailyTask() {
   dp[today].quizDone = true;
   dp[today].done = dp[today].total;
   u.daily_progress = dp;
+
+  // ── update SR level for all daily words at once (single write per word) ──
+  const sr = {...(u.sr||{})};
+  const forgot = window._dailyForgot || new Set();
+  dailyQuizWords.forEach(w => {
+    const cur = sr[w.id] || { level: -1 };
+    // if marked forgot during study → reset to 0, else increment
+    const remembered = !forgot.has(w.id);
+    const newLevel = remembered ? Math.min((cur.level < 0 ? 0 : cur.level) + 1, SR_INTERVALS.length - 1) : 0;
+    const days = SR_INTERVALS[newLevel];
+    const next = new Date(); next.setDate(next.getDate() + days);
+    sr[w.id] = { level: newLevel, nextDate: next.toISOString().slice(0,10) };
+  });
+  u.sr = sr;
+
   // complete course check for all studied words
   const known = {...(u.known||{})};
   const comp = [...(u.completed_courses||[])];
@@ -418,7 +437,7 @@ async function finishDailyTask() {
     }
   });
   u.known = known; u.completed_courses = comp; u.score = (u.score||0) + scoreBonus;
-  await updateOne('users', CU.name, { daily_progress: dp, known, completed_courses: comp, score: u.score });
+  await updateOne('users', CU.name, { daily_progress: dp, known, completed_courses: comp, score: u.score, sr });
   document.getElementById('stu-score').textContent = u.score;
   const pct = Math.round(dailyQC/dailyQuizWords.length*100);
   const emoji = pct>=80?'🎉':pct>=50?'👍':'📖';
