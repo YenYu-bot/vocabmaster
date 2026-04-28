@@ -324,33 +324,46 @@ window.submitFill = function() {
     input.style.borderColor='var(--success)'; input.style.background='var(--sl)';
     res.style.color='var(--success)';
     res.innerHTML='✓ 正確！';
-    updateScore(w.id);
+    updateScore(w.id, true);
   } else {
     input.style.borderColor='var(--danger)'; input.style.background='var(--dl)';
     res.style.color='var(--danger)';
     res.innerHTML='✗ 答錯了，正確答案是：<strong>'+w.en+'</strong>';
+    updateScore(w.id, false);
   }
   document.getElementById('q-next-btn').style.display='block';
 };
 
-async function updateScore(wid) {
-  QS+=10; QC++;
-  const u=CU.data; u.score=(u.score||0)+10;
-  const known={...(u.known||{})}; known[wid]=true; u.known=known;
-  await updateOne('users', CU.name, { score: u.score, known });
-  document.getElementById('stu-score').textContent=u.score;
-  document.getElementById('q-score-tag').textContent='積分：'+QS;
+async function updateScore(wid, correct=true) {
+  const u = CU.data;
+  // quiz stats per word
+  const qs = {...(u.quiz_stats||{})};
+  if (!qs[wid]) qs[wid] = { attempts:0, correct:0 };
+  qs[wid].attempts++;
+  if (correct) qs[wid].correct++;
+
+  if (correct) {
+    QS+=10; QC++;
+    u.score=(u.score||0)+10;
+    const known={...(u.known||{})}; known[wid]=true; u.known=known;
+    await updateOne('users', CU.name, { score: u.score, known, quiz_stats: qs });
+    document.getElementById('stu-score').textContent=u.score;
+    document.getElementById('q-score-tag').textContent='積分：'+QS;
+  } else {
+    await updateOne('users', CU.name, { quiz_stats: qs });
+  }
 }
 
 async function answerMC(btn, correct, wid) {
   document.querySelectorAll('.quiz-opt').forEach(b=>b.onclick=null);
   if (correct) {
     btn.classList.add('correct');
-    await updateScore(wid);
+    await updateScore(wid, true);
   } else {
     btn.classList.add('wrong');
     const cz=AW.find(w=>w.id===wid)?.zh;
     document.querySelectorAll('.quiz-opt').forEach(b=>{if(b.textContent===cz)b.classList.add('correct');});
+    await updateScore(wid, false);
   }
   document.getElementById('q-next-btn').style.display='block';
 }
@@ -642,22 +655,40 @@ function showStudentDetail(u) {
   const comp = u.completed_courses||[];
   const sr = u.sr||{};
   const dp = u.daily_progress||{};
+  const qs = u.quiz_stats||{};
   const today = todayStr();
 
+  // delete button
+  const delBtn = document.createElement('button');
+  delBtn.className = 'btn btn-sm mb12';
+  delBtn.style.cssText = 'color:var(--danger);border-color:var(--danger);width:100%';
+  delBtn.textContent = '🗑 刪除此學生所有資料';
+  delBtn.onclick = async () => {
+    if (!confirm('確定刪除「'+u.id+'」的所有學習記錄？此操作無法復原。')) return;
+    await delOne('users', u.id);
+    showStudentList(); renderStudentList();
+  };
+  detail.appendChild(delBtn);
+
   // top stats
+  const totalAttempts = Object.values(qs).reduce((s,v)=>s+(v.attempts||0),0);
+  const totalCorrect = Object.values(qs).reduce((s,v)=>s+(v.correct||0),0);
+  const quizPct = totalAttempts ? Math.round(totalCorrect/totalAttempts*100) : 0;
   const topEl = document.createElement('div');
-  topEl.className = 'grid3 mb12';
+  topEl.className = 'mb12';
+  topEl.style.cssText = 'display:grid;grid-template-columns:repeat(2,1fr);gap:8px';
   topEl.innerHTML = `
     <div class="stat-card"><div class="stat-label">總積分</div><div class="stat-num" style="color:var(--brand)">${u.score}</div></div>
-    <div class="stat-card"><div class="stat-label">已學單字</div><div class="stat-num">${Object.keys(known).length}</div></div>
-    <div class="stat-card"><div class="stat-label">完成課程</div><div class="stat-num" style="color:var(--success)">${comp.length}</div></div>`;
+    <div class="stat-card"><div class="stat-label">已學單字</div><div class="stat-num">${Object.keys(known).length} / ${AW.length}</div></div>
+    <div class="stat-card"><div class="stat-label">測驗總答題</div><div class="stat-num">${totalAttempts}</div></div>
+    <div class="stat-card"><div class="stat-label">測驗正確率</div><div class="stat-num" style="color:${quizPct>=70?'var(--success)':'var(--warn)'}">${totalAttempts?quizPct+'%':'—'}</div></div>`;
   detail.appendChild(topEl);
 
-  // daily progress history (last 7 days)
+  // daily progress history (last 14 days)
   const histEl = document.createElement('div');
   histEl.className = 'card mb12';
-  let histHTML = '<div class="bold text-sm mb8">📅 近 7 天每日任務</div><div style="display:flex;gap:6px;flex-wrap:wrap">';
-  for (let i=6; i>=0; i--) {
+  let histHTML = '<div class="bold text-sm mb8">📅 近 14 天每日任務</div><div style="display:flex;gap:4px;flex-wrap:wrap">';
+  for (let i=13; i>=0; i--) {
     const d = new Date(); d.setDate(d.getDate()-i);
     const ds = d.toISOString().slice(0,10);
     const dpDay = dp[ds];
@@ -666,33 +697,32 @@ function showStudentDetail(u) {
     if (!dpDay || dpDay.total===0) { bg='#f1f5f9'; color='#94a3b8'; icon='—'; }
     else if (dpDay.done >= dpDay.total) { bg='var(--sl)'; color='var(--success)'; icon='✓'; }
     else { bg='var(--wl)'; color='var(--warn)'; icon=dpDay.done+'/'+dpDay.total; }
-    histHTML += `<div style="background:${bg};color:${color};border-radius:8px;padding:6px 10px;text-align:center;font-size:12px;font-weight:500;min-width:40px">
-      <div>${label}</div><div style="font-size:11px;margin-top:2px">${icon}</div></div>`;
+    histHTML += `<div style="background:${bg};color:${color};border-radius:6px;padding:5px 7px;text-align:center;font-size:11px;font-weight:500;min-width:36px">
+      <div>${label}</div><div style="margin-top:1px">${icon}</div></div>`;
   }
   histHTML += '</div>';
   histEl.innerHTML = histHTML;
   detail.appendChild(histEl);
 
   // SR stats
-  const srWords = Object.keys(sr);
   const srLevels = [0,0,0,0,0];
-  srWords.forEach(wid => { const lv = sr[wid]?.level||0; srLevels[Math.min(lv,4)]++; });
+  Object.keys(sr).forEach(wid => { srLevels[Math.min(sr[wid]?.level||0, 4)]++; });
   const srEl = document.createElement('div');
   srEl.className = 'card mb12';
-  srEl.innerHTML = `<div class="bold text-sm mb8">🧠 遺忘曲線進度</div>
+  srEl.innerHTML = `<div class="bold text-sm mb8">🧠 遺忘曲線進度（共 ${Object.keys(sr).length} 個單字進入複習）</div>
     <div style="display:flex;gap:6px;flex-wrap:wrap">
       ${['初學','第2次','第3次','第4次','熟練'].map((label,i)=>`
-        <div style="flex:1;min-width:56px;background:var(--bg);border-radius:8px;padding:8px;text-align:center;border:1px solid var(--border)">
-          <div class="text-muted" style="font-size:11px">${label}</div>
+        <div style="flex:1;min-width:52px;background:var(--bg);border-radius:8px;padding:8px;text-align:center;border:1px solid var(--border)">
+          <div class="text-muted" style="font-size:10px">${label}</div>
           <div style="font-size:18px;font-weight:700;color:var(--brand);margin-top:2px">${srLevels[i]}</div>
         </div>`).join('')}
     </div>`;
   detail.appendChild(srEl);
 
-  // course progress
+  // course detail with word-level breakdown
   const courseEl = document.createElement('div');
   courseEl.className = 'card';
-  let courseHTML = '<div class="bold text-sm mb8">📚 課程完成狀況</div>';
+  let courseHTML = '<div class="bold text-sm mb8">📚 課程單字詳情</div>';
   if (!AC.length) { courseHTML += '<p class="text-muted text-sm">尚無課程</p>'; }
   else {
     AC.forEach(c => {
@@ -700,14 +730,31 @@ function showStudentDetail(u) {
       const done = ws.filter(w => known[w.id]).length;
       const pct = ws.length ? Math.round(done/ws.length*100) : 0;
       const isComp = comp.includes(c.id);
-      courseHTML += `<div style="padding:8px 0;border-bottom:1px solid var(--border)">
+      courseHTML += `<div style="padding:10px 0;border-bottom:1px solid var(--border)">
         <div class="flex gap8 mb8">
-          <span class="text-sm">${c.name}</span>
+          <span class="bold text-sm">${c.name}</span>
           <span class="tag ${isComp?'tag-g':'tag-a'}" style="font-size:11px">${isComp?'✓ 完成':'進行中'}</span>
-          <span class="text-muted" style="font-size:12px;margin-left:auto">${done}/${ws.length}</span>
+          <span class="text-muted" style="font-size:12px;margin-left:auto">${done}/${ws.length} (${pct}%)</span>
         </div>
-        <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
-      </div>`;
+        <div class="progress-bar mb8"><div class="progress-fill" style="width:${pct}%"></div></div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px">`;
+      ws.forEach(w => {
+        const isKnown = !!known[w.id];
+        const wqs = qs[w.id];
+        const srLv = sr[w.id]?.level;
+        let tooltip = w.en;
+        if (wqs) tooltip += ` (答題${wqs.attempts}次 正確${wqs.correct}次)`;
+        let bg, color;
+        if (!isKnown) { bg='#f1f5f9'; color='#94a3b8'; }
+        else if (srLv >= 4) { bg='var(--sl)'; color='var(--success)'; }
+        else if (srLv >= 2) { bg='var(--brand-l)'; color='var(--brand-d)'; }
+        else { bg='var(--wl)'; color='var(--warn)'; }
+        const acc = wqs&&wqs.attempts ? Math.round(wqs.correct/wqs.attempts*100)+'%' : '';
+        courseHTML += `<div title="${tooltip}" style="background:${bg};color:${color};border-radius:4px;padding:3px 7px;font-size:11px;font-weight:500;cursor:default">
+          ${w.en}${acc?'<span style="opacity:0.7;font-size:10px"> '+acc+'</span>':''}
+        </div>`;
+      });
+      courseHTML += `</div></div>`;
     });
   }
   courseEl.innerHTML = courseHTML;
