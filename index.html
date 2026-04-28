@@ -580,7 +580,7 @@ window.deleteCourse = async function(id) {
 };
 
 // ── student progress ──────────────────────────────────────────
-async function renderStudentList() {
+window.renderStudentList = async function renderStudentList() {
   const list = document.getElementById('student-list-view');
   list.innerHTML = '<div class="loading">載入中...</div>';
   const all = await getAll('users');
@@ -636,12 +636,12 @@ async function renderStudentList() {
   });
 }
 
-function showStudentList() {
+window.showStudentList = function() {
   document.getElementById('stu-panel-title').textContent = '所有學生';
   document.getElementById('stu-back-btn').style.display = 'none';
   document.getElementById('student-list-view').style.display = 'block';
   document.getElementById('student-detail-view').style.display = 'none';
-}
+};
 
 function showStudentDetail(u) {
   document.getElementById('stu-panel-title').textContent = u.id + ' 的學習進度';
