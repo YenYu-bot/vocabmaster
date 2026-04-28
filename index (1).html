@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>VocabMaster 高中英文單字</title>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, query, orderBy } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyAhpeTFPvBKEUmYMgtQsb7416rhdk_eXqA",
+  authDomain: "english-vocabu.firebaseapp.com",
+  projectId: "english-vocabu",
+  storageBucket: "english-vocabu.firebasestorage.app",
+  messagingSenderId: "295043141086",
+  appId: "1:295043141086:web:094bd1c955ce4dcc63a14f",
+  measurementId: "G-Y2DBL3EKWQ"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+
+// ── helpers ──────────────────────────────────────────────────
+async function getAll(col) {
+  const snap = await getDocs(collection(db, col));
+  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+}
+async function getOne(col, id) {
+  const snap = await getDoc(doc(db, col, id));
+  return snap.exists() ? { id: snap.id, ...snap.data() } : null;
+}
+async function setOne(col, id, data) {
+  await setDoc(doc(db, col, id), data);
+}
+async function updateOne(col, id, data) {
+  await updateDoc(doc(db, col, id), data);
+}
+async function delOne(col, id) {
+  await deleteDoc(doc(db, col, id));
+}
+
+// ── state ────────────────────────────────────────────────────
+let CU = null, AW = [], AC = [];
+let SW = [], SI = 0, QW = [], QI = 0, QS = 0, QC = 0;
+
+async function loadAll() {
+  const [cs, ws] = await Promise.all([getAll('courses'), getAll('words')]);
+  AC = cs.sort((a,b) => (a.createdAt||0) - (b.createdAt||0));
+  AW = ws.sort((a,b) => (a.createdAt||0) - (b.createdAt||0));
+}
+
+// ── login ────────────────────────────────────────────────────
+window.doLogin = async function() {
+  const name = document.getElementById('login-name').value.trim();
+  const role = document.getElementById('login-role').value;
+  const err = document.getElementById('login-err');
+  if (!name) { showErr(err, '請輸入姓名'); return; }
+  err.style.display='block'; err.style.color='var(--muted)'; err.textContent='登入中...';
+  try {
+    let u = await getOne('users', name);
+    if (!u) {
+      await setOne('users', name, { score:0, known:{}, completed_courses:[], createdAt: Date.now() });
+      u = await getOne('users', name);
+    }
+    CU = { name, role, data: u };
+    await loadAll();
+    err.style.display = 'none';
+    if (role === 'admin') {
+      document.getElementById('admin-name').textContent = name;
+      showScreen('s-admin'); renderWords(); renderAdminCourses(); updateIC();
+    } else {
+      document.getElementById('stu-name').textContent = name;
+      document.getElementById('stu-avatar').textContent = name[0];
+      document.getElementById('stu-score').textContent = u.score;
+      showScreen('s-student'); refreshHome(); loadSC(); loadQC();
+    }
+  } catch(e) { showErr(err, '連線失敗：' + e.message); }
+};
+
+function showErr(el, msg) { el.style.display='block'; el.style.color='var(--danger)'; el.textContent=msg; }
+window.logout = function() { CU=null; showScreen('s-login'); };
+function showScreen(id) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+}
+
+// ── student tabs ─────────────────────────────────────────────
+window.stuTab = function(t, el) {
+  document.querySelectorAll('#s-student .tab').forEach(x => x.classList.remove('active'));
+  el.classList.add('active');
+  ['home','study','quiz','rank'].forEach(n => document.getElementById('t-'+n).style.display = n===t?'block':'none');
+  if (t==='rank') renderRank();
+  if (t==='home') refreshHome();
+};
+
+async function refreshHome() {
+  const u = CU.data; const known = u.known||{};
+  document.getElementById('h-total').textContent = AW.length;
+  document.getElementById('h-learned').textContent = Object.keys(known).length;
+  document.getElementById('stu-score').textContent = u.score;
+  const all = await getAll('users');
+  all.sort((a,b) => b.score - a.score);
+  const ri = all.findIndex(x => x.id === CU.name);
+  document.getElementById('h-rank').textContent = '#' + (ri+1);
+  renderCL();
+}
+
+function renderCL() {
+  const u = CU.data; const known = u.known||{}; const comp = u.completed_courses||[];
+  const list = document.getElementById('course-list'); list.innerHTML='';
+  if (!AC.length) { list.innerHTML='<p class="text-muted text-sm" style="padding:8px">尚無課程，請等待老師新增</p>'; return; }
+  AC.forEach(c => {
+    const ws = AW.filter(w => w.cid===c.id);
+    const done = ws.filter(w => known[w.id]).length;
+    const pct = ws.length ? Math.round(done/ws.length*100) : 0;
+    const ok = comp.includes(c.id);
+    const row = document.createElement('div'); row.className='course-row';
+    row.innerHTML=`<div style="flex:1"><div class="flex gap8 mb8"><span class="bold text-sm">${c.name}</span><span class="tag ${ok?'tag-g':'tag-a'}">${ok?'✓ 已完成':'進行中'}</span></div><div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div><div class="text-muted mt8" style="font-size:12px">${done}/${ws.length} 個單字 · ${pct}%</div></div>`;
+    list.appendChild(row);
+  });
+}
+
+// ── study ────────────────────────────────────────────────────
+function loadSC() {
+  const sel = document.getElementById('study-course'); sel.innerHTML='';
+  AC.forEach(c => { const o=document.createElement('option'); o.value=c.id; o.textContent=c.name; sel.appendChild(o); });
+  loadStudy();
+}
+window.loadStudy = function() {
+  SW = AW.filter(w => w.cid===document.getElementById('study-course').value);
+  SI=0; showSC();
+};
+function showSC() {
+  const w = SW[SI];
+  if (!w) { document.getElementById('study-en').textContent='（此課程無單字）'; return; }
+  document.getElementById('flip-card').classList.remove('flipped');
+  document.getElementById('study-en').textContent = w.en;
+  document.getElementById('study-pos').textContent = w.pos||'';
+  document.getElementById('study-zh').textContent = w.zh;
+  document.getElementById('study-ex').textContent = w.ex||'';
+  document.getElementById('study-progress').textContent = (SI+1)+'/'+SW.length;
+  document.getElementById('study-bar').style.width = Math.round((SI+1)/SW.length*100)+'%';
+}
+window.flipCard = function() { document.getElementById('flip-card').classList.toggle('flipped'); };
+window.studyNav = function(d) { SI=Math.max(0,Math.min(SW.length-1,SI+d)); showSC(); };
+window.markKnown = async function() {
+  const w = SW[SI]; if (!w) return;
+  const u = CU.data; const known = {...(u.known||{})};
+  if (!known[w.id]) {
+    known[w.id] = true; u.known = known;
+    const comp = [...(u.completed_courses||[])];
+    const ws = AW.filter(x => x.cid===w.cid);
+    if (ws.length && ws.every(x=>known[x.id]) && !comp.includes(w.cid)) {
+      comp.push(w.cid); u.completed_courses=comp; u.score=(u.score||0)+50;
+      alert('🎉 恭喜完成「'+AC.find(c=>c.id===w.cid)?.name+'」！獲得 50 積分！');
+    }
+    await updateOne('users', CU.name, { known, completed_courses: u.completed_courses, score: u.score });
+    document.getElementById('stu-score').textContent = u.score;
+  }
+  window.studyNav(1);
+};
+
+// ── quiz ─────────────────────────────────────────────────────
+function loadQC() {
+  const sel = document.getElementById('quiz-course'); sel.innerHTML='';
+  AC.forEach(c => { const o=document.createElement('option'); o.value=c.id; o.textContent=c.name; sel.appendChild(o); });
+}
+function shuffle(a) { for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}return a; }
+window.startQuiz = function() {
+  const cid = document.getElementById('quiz-course').value;
+  const cnt = parseInt(document.getElementById('quiz-count').value);
+  const pool = AW.filter(w => w.cid===cid);
+  if (pool.length<4) { alert('該課程單字不足 4 個，無法出題'); return; }
+  QW=shuffle([...pool]).slice(0,Math.min(cnt,pool.length));
+  QI=0; QS=0; QC=0;
+  document.getElementById('quiz-setup').style.display='none';
+  document.getElementById('quiz-game').style.display='block';
+  document.getElementById('quiz-result').style.display='none';
+  showQ();
+};
+function showQ() {
+  const w = QW[QI];
+  document.getElementById('q-progress').textContent=(QI+1)+'/'+QW.length;
+  document.getElementById('q-score-tag').textContent='積分：'+QS;
+  document.getElementById('q-word').textContent=w.en;
+  document.getElementById('q-pos').textContent=w.pos||'';
+  document.getElementById('q-next-btn').style.display='none';
+  const opts=document.getElementById('q-options'); opts.innerHTML='';
+  const others=shuffle(AW.filter(x=>x.id!==w.id)).slice(0,3);
+  shuffle([w,...others]).forEach(c=>{
+    const btn=document.createElement('button'); btn.className='quiz-opt'; btn.textContent=c.zh;
+    btn.onclick=()=>answerQ(btn,c.id===w.id,w.id); opts.appendChild(btn);
+  });
+}
+async function answerQ(btn, correct, wid) {
+  document.querySelectorAll('.quiz-opt').forEach(b=>b.onclick=null);
+  if (correct) {
+    btn.classList.add('correct'); QS+=10; QC++;
+    const u=CU.data; u.score=(u.score||0)+10;
+    const known={...(u.known||{})}; known[wid]=true; u.known=known;
+    await updateOne('users', CU.name, { score: u.score, known });
+    document.getElementById('stu-score').textContent=u.score;
+  } else {
+    btn.classList.add('wrong');
+    const cz=AW.find(w=>w.id===wid)?.zh;
+    document.querySelectorAll('.quiz-opt').forEach(b=>{if(b.textContent===cz)b.classList.add('correct');});
+  }
+  document.getElementById('q-next-btn').style.display='block';
+}
+window.nextQuestion = function() { QI++; if(QI>=QW.length){showResult();return;} showQ(); };
+function showResult() {
+  document.getElementById('quiz-game').style.display='none';
+  document.getElementById('quiz-result').style.display='block';
+  const pct=Math.round(QC/QW.length*100);
+  document.getElementById('r-correct').textContent=QC+'/'+QW.length;
+  document.getElementById('r-pct').textContent=pct+'%';
+  document.getElementById('r-pts').textContent='+'+QS;
+  document.getElementById('r-emoji').textContent=pct>=80?'🎉':pct>=50?'👍':'📖';
+  document.getElementById('r-title').textContent=pct>=80?'太棒了！':pct>=50?'不錯喔！':'繼續努力！';
+  document.getElementById('r-subtitle').textContent='正確率 '+pct+'%，共獲得 '+QS+' 積分';
+}
+window.resetQuiz = function() {
+  document.getElementById('quiz-setup').style.display='block';
+  document.getElementById('quiz-game').style.display='none';
+  document.getElementById('quiz-result').style.display='none';
+};
+
+// ── rank ─────────────────────────────────────────────────────
+async function renderRank() {
+  const list=document.getElementById('rank-list'); list.innerHTML='<div class="loading">載入中...</div>';
+  const all=await getAll('users'); all.sort((a,b)=>b.score-a.score);
+  list.innerHTML='';
+  if(!all.length){list.innerHTML='<p class="text-muted text-sm" style="padding:8px">暫無排名資料</p>';return;}
+  all.forEach((u,i)=>{
+    const isMe=u.id===CU.name;
+    const medal=i===0?'🥇':i===1?'🥈':i===2?'🥉':'';
+    const row=document.createElement('div'); row.className='rank-row';
+    row.innerHTML=`<div style="width:28px;text-align:center;font-size:15px">${medal||'<span style="font-size:13px;color:var(--muted)">#'+(i+1)+'</span>'}</div><div class="avatar" style="${isMe?'background:var(--brand);color:#fff':''}">${u.id[0]}</div><div style="flex:1"><div class="bold text-sm">${u.id}${isMe?' <span style="color:var(--brand)">(我)</span>':''}</div><div class="text-muted" style="font-size:12px">已學 ${Object.keys(u.known||{}).length} 個・完成 ${(u.completed_courses||[]).length} 課</div></div><div class="bold" style="color:var(--brand);font-size:16px">${u.score} 分</div>`;
+    list.appendChild(row);
+  });
+}
+
+// ── admin ────────────────────────────────────────────────────
+window.adminTab = function(t, el) {
+  document.querySelectorAll('#s-admin .tab').forEach(x=>x.classList.remove('active'));
+  el.classList.add('active');
+  ['words','import','courses'].forEach(n=>document.getElementById('at-'+n).style.display=n===t?'block':'none');
+  if(t==='words'){renderWords();updateFC();}
+  if(t==='courses') renderAdminCourses();
+  if(t==='import') updateIC();
+};
+function updateFC() {
+  const sel=document.getElementById('filter-course'); if(!sel)return;
+  const cur=sel.value; sel.innerHTML='<option value="">所有課程</option>';
+  AC.forEach(c=>{const o=document.createElement('option');o.value=c.id;o.textContent=c.name;sel.appendChild(o);});
+  sel.value=cur;
+}
+function updateIC() {
+  const sel=document.getElementById('import-course'); if(!sel)return;
+  sel.innerHTML='';
+  AC.forEach(c=>{const o=document.createElement('option');o.value=c.id;o.textContent=c.name;sel.appendChild(o);});
+}
+window.renderWords = function() {
+  const q=(document.getElementById('search-word')?.value||'').toLowerCase();
+  const fc=document.getElementById('filter-course')?.value||'';
+  const list=document.getElementById('word-list'); list.innerHTML='';
+  const f=AW.filter(w=>(!q||w.en.toLowerCase().includes(q)||w.zh.includes(q))&&(!fc||w.cid===fc));
+  if(!f.length){list.innerHTML='<p class="text-muted text-sm" style="padding:10px 0">無符合單字</p>';return;}
+  f.forEach(w=>{
+    const c=AC.find(x=>x.id===w.cid);
+    const row=document.createElement('div'); row.style.cssText='display:flex;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid var(--border)';
+    row.innerHTML=`<div style="flex:1"><div class="flex gap8"><span class="bold text-sm">${w.en}</span><span class="tag tag-a" style="font-size:11px">${w.pos||''}</span></div><div class="text-muted" style="font-size:12px">${w.zh}${c?' · '+c.name:''}</div></div><button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger);flex-shrink:0" onclick="deleteWord('${w.id}')">刪除</button>`;
+    list.appendChild(row);
+  });
+};
+window.deleteWord = async function(id) {
+  if(!confirm('確定刪除此單字？'))return;
+  await delOne('words', id);
+  AW=AW.filter(w=>w.id!==id); window.renderWords();
+};
+window.importWords = async function() {
+  const cid=document.getElementById('import-course').value;
+  const text=document.getElementById('import-text').value.trim();
+  const msg=document.getElementById('import-msg');
+  if(!cid||!text){msg.innerHTML='<div class="notice notice-i">請選擇課程並輸入單字</div>';return;}
+  const rows=[];
+  text.split('\n').forEach(line=>{
+    const p=line.split(',').map(s=>s.trim());
+    if(p.length<2||!p[0])return;
+    rows.push({id:'w'+Date.now()+Math.random().toString(36).slice(2,7), en:p[0], zh:p[1], pos:p[2]||'', ex:p[3]||'', cid, createdAt:Date.now()});
+  });
+  if(!rows.length){msg.innerHTML='<div class="notice notice-i">沒有可匯入的資料</div>';return;}
+  try {
+    await Promise.all(rows.map(r=>setOne('words',r.id,r)));
+    AW=[...AW,...rows];
+    document.getElementById('import-text').value='';
+    msg.innerHTML=`<div class="notice notice-s">✓ 成功匯入 ${rows.length} 個單字！</div>`;
+    window.renderWords();
+  } catch(e) { msg.innerHTML=`<div class="notice notice-e">匯入失敗：${e.message}</div>`; }
+};
+window.toggleBox = function(id){const b=document.getElementById(id);b.style.display=b.style.display==='none'?'block':'none';};
+window.addCourse = async function(inputId) {
+  const inp=document.getElementById(inputId);
+  const name=inp.value.trim(); if(!name)return;
+  const id='c'+Date.now();
+  try {
+    await setOne('courses',id,{name,createdAt:Date.now()});
+    AC.push({id,name,createdAt:Date.now()}); inp.value='';
+    window.toggleBox(inputId==='nc1-name'?'nc1':'nc2');
+    updateIC(); updateFC(); renderAdminCourses(); loadSC(); loadQC();
+  } catch(e){alert('新增失敗：'+e.message);}
+};
+async function renderAdminCourses() {
+  const list=document.getElementById('admin-course-list'); list.innerHTML='';
+  if(!AC.length){list.innerHTML='<p class="text-muted text-sm" style="padding:8px">尚無課程</p>';return;}
+  AC.forEach(c=>{
+    const ws=AW.filter(w=>w.cid===c.id);
+    const row=document.createElement('div'); row.className='course-row';
+    row.innerHTML=`<div style="flex:1"><div class="bold text-sm">${c.name}</div><div class="text-muted" style="font-size:12px">${ws.length} 個單字</div></div><button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deleteCourse('${c.id}')">刪除</button>`;
+    list.appendChild(row);
+  });
+}
+window.deleteCourse = async function(id) {
+  if(!confirm('刪除課程將同時刪除所有相關單字，確定繼續？'))return;
+  const ws=AW.filter(w=>w.cid===id);
+  await Promise.all([delOne('courses',id),...ws.map(w=>delOne('words',w.id))]);
+  AC=AC.filter(c=>c.id!==id); AW=AW.filter(w=>w.cid!==id);
+  renderAdminCourses(); updateFC(); updateIC(); window.renderWords();
+};
+</script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --brand:#2563eb;--brand-l:#dbeafe;--brand-d:#1e40af;
+  --success:#16a34a;--sl:#dcfce7;--warn:#d97706;--wl:#fef3c7;
+  --danger:#dc2626;--dl:#fee2e2;
+  --bg:#f1f5f9;--surface:#fff;--border:#e2e8f0;--text:#1e293b;--muted:#64748b;--r:10px
+}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+#app{max-width:500px;margin:0 auto;padding:16px}
+.screen{display:none}.screen.active{display:block}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:16px 20px;margin-bottom:12px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:9px 18px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;font-size:14px;font-weight:500;transition:all 0.15s}
+.btn:hover{background:var(--bg)}.btn:active{transform:scale(0.97)}
+.btn-p{background:var(--brand);color:#fff;border-color:var(--brand)}.btn-p:hover{background:var(--brand-d);color:#fff}
+.btn-sm{padding:5px 12px;font-size:13px}
+input,select,textarea{width:100%;padding:9px 12px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);font-size:14px;font-family:inherit;margin-bottom:10px}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-l)}
+label{display:block;font-size:13px;font-weight:500;color:var(--muted);margin-bottom:5px}
+.tab-bar{display:flex;border-bottom:1px solid var(--border);margin-bottom:16px;overflow-x:auto}
+.tab{padding:8px 14px;font-size:14px;cursor:pointer;border-bottom:2px solid transparent;color:var(--muted);font-weight:500;white-space:nowrap}
+.tab.active{color:var(--brand);border-bottom-color:var(--brand)}
+.flip-card{perspective:800px;height:190px;cursor:pointer;margin:16px 0}
+.flip-inner{position:relative;width:100%;height:100%;transition:transform 0.5s;transform-style:preserve-3d}
+.flip-card.flipped .flip-inner{transform:rotateY(180deg)}
+.flip-front,.flip-back{position:absolute;width:100%;height:100%;backface-visibility:hidden;border-radius:var(--r);border:1px solid var(--border);background:var(--surface);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px;text-align:center}
+.flip-back{transform:rotateY(180deg);background:var(--brand-l)}
+.word-en{font-size:30px;font-weight:700;letter-spacing:-0.5px;margin:6px 0}
+.word-zh{font-size:24px;font-weight:700;color:var(--brand-d);margin:6px 0}
+.quiz-opt{width:100%;text-align:left;padding:11px 14px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text);cursor:pointer;font-size:14px;margin-bottom:8px;transition:all 0.15s}
+.quiz-opt:hover{background:var(--bg)}
+.quiz-opt.correct{background:var(--sl);border-color:var(--success);color:var(--success);font-weight:500}
+.quiz-opt.wrong{background:var(--dl);border-color:var(--danger);color:var(--danger)}
+.rank-row{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)}
+.rank-row:last-child{border-bottom:none}
+.course-row{display:flex;align-items:center;gap:10px;padding:11px 0;border-bottom:1px solid var(--border)}
+.course-row:last-child{border-bottom:none}
+.tag{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;font-weight:500}
+.tag-b{background:var(--brand-l);color:var(--brand-d)}.tag-g{background:var(--sl);color:var(--success)}.tag-a{background:var(--wl);color:var(--warn)}
+.progress-bar{height:7px;border-radius:99px;background:var(--bg);overflow:hidden;border:1px solid var(--border)}
+.progress-fill{height:100%;border-radius:99px;background:var(--brand);transition:width 0.4s}
+.avatar{width:38px;height:38px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:15px;background:var(--brand-l);color:var(--brand-d);flex-shrink:0}
+.stat-card{background:var(--bg);border-radius:8px;padding:12px;text-align:center;border:1px solid var(--border)}
+.stat-num{font-size:24px;font-weight:700;margin-top:3px}.stat-label{font-size:12px;color:var(--muted)}
+.notice{padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:12px;line-height:1.6}
+.notice-i{background:var(--brand-l);color:var(--brand-d)}.notice-s{background:var(--sl);color:var(--success)}.notice-e{background:var(--dl);color:var(--danger)}
+.loading{text-align:center;padding:32px 0;color:var(--muted);font-size:14px}
+h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weight:600;margin-bottom:8px}
+.flex{display:flex;align-items:center}.gap8{gap:8px}.gap12{gap:12px}
+.mt8{margin-top:8px}.mt12{margin-top:12px}.mb0{margin-bottom:0!important}.mb8{margin-bottom:8px!important}.mb12{margin-bottom:12px!important}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.bold{font-weight:600}.text-muted{color:var(--muted);font-size:13px}.text-sm{font-size:13px}
+.header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--border)}
+</style>
+</head>
+<body>
+<div id="app">
+
+<div id="s-login" class="screen active" style="max-width:360px;margin:48px auto">
+  <div style="text-align:center;margin-bottom:28px">
+    <div style="font-size:48px;margin-bottom:10px">📚</div>
+    <h2 style="font-size:24px;margin-bottom:6px">VocabMaster</h2>
+    <p class="text-muted">高中英文單字學習系統</p>
+  </div>
+  <div class="card">
+    <label>選擇身分</label>
+    <select id="login-role"><option value="student">學生</option><option value="admin">出題者 / 老師</option></select>
+    <label>姓名</label>
+    <input id="login-name" type="text" placeholder="輸入你的姓名" onkeydown="if(event.key==='Enter')doLogin()"/>
+    <button class="btn btn-p" style="width:100%;margin-top:4px" onclick="doLogin()">登入</button>
+    <div id="login-err" style="font-size:13px;margin-top:8px;display:none;text-align:center"></div>
+  </div>
+</div>
+
+<div id="s-student" class="screen">
+  <div class="header">
+    <div class="flex gap8">
+      <div class="avatar" id="stu-avatar">王</div>
+      <div><div class="bold" id="stu-name">-</div><div class="text-muted" style="font-size:12px">積分：<span id="stu-score">0</span> 分</div></div>
+    </div>
+    <button class="btn btn-sm" onclick="logout()">登出</button>
+  </div>
+  <div class="tab-bar">
+    <div class="tab active" onclick="stuTab('home',this)">主頁</div>
+    <div class="tab" onclick="stuTab('study',this)">背誦</div>
+    <div class="tab" onclick="stuTab('quiz',this)">考核</div>
+    <div class="tab" onclick="stuTab('rank',this)">排名</div>
+  </div>
+  <div id="t-home">
+    <div class="grid3 mb12">
+      <div class="stat-card"><div class="stat-label">總單字</div><div class="stat-num" id="h-total">0</div></div>
+      <div class="stat-card"><div class="stat-label">已學習</div><div class="stat-num" id="h-learned">0</div></div>
+      <div class="stat-card"><div class="stat-label">我的排名</div><div class="stat-num" id="h-rank">#-</div></div>
+    </div>
+    <h3>課程進度</h3>
+    <div class="card" id="course-list"><div class="loading">載入中...</div></div>
+  </div>
+  <div id="t-study" style="display:none">
+    <div class="flex gap8 mb12" style="justify-content:space-between;align-items:center">
+      <select id="study-course" class="mb0" style="flex:1" onchange="loadStudy()"></select>
+      <span class="text-muted text-sm" style="white-space:nowrap;margin-left:8px" id="study-progress">0/0</span>
+    </div>
+    <div class="flip-card" id="flip-card" onclick="flipCard()">
+      <div class="flip-inner">
+        <div class="flip-front"><div class="text-muted text-sm">英文單字（點擊翻面）</div><div class="word-en" id="study-en">-</div><div class="text-muted text-sm" id="study-pos"></div></div>
+        <div class="flip-back"><div class="text-muted text-sm">中文翻譯</div><div class="word-zh" id="study-zh">-</div><div class="text-sm mt8" id="study-ex" style="color:var(--brand-d);line-height:1.5"></div></div>
+      </div>
+    </div>
+    <div class="flex gap8" style="justify-content:center;margin-bottom:12px">
+      <button class="btn" onclick="studyNav(-1)">← 上一個</button>
+      <button class="btn btn-p" onclick="markKnown()">認識 ✓</button>
+      <button class="btn" onclick="studyNav(1)">下一個 →</button>
+    </div>
+    <div class="progress-bar"><div class="progress-fill" id="study-bar" style="width:0%"></div></div>
+  </div>
+  <div id="t-quiz" style="display:none">
+    <div id="quiz-setup">
+      <label>選擇課程</label><select id="quiz-course"></select>
+      <label>題目數量</label>
+      <select id="quiz-count"><option value="5">5 題</option><option value="10" selected>10 題</option><option value="20">20 題</option></select>
+      <button class="btn btn-p" style="width:100%;margin-top:4px" onclick="startQuiz()">開始考核</button>
+    </div>
+    <div id="quiz-game" style="display:none">
+      <div class="flex mb12" style="justify-content:space-between;align-items:center">
+        <span class="text-sm text-muted" id="q-progress">1/10</span>
+        <span class="tag tag-b" id="q-score-tag">積分：0</span>
+      </div>
+      <div class="card mb12">
+        <div class="text-muted text-sm mb8">以下哪個是正確翻譯？</div>
+        <div class="word-en" style="font-size:24px" id="q-word">word</div>
+        <div class="text-muted text-sm" id="q-pos"></div>
+      </div>
+      <div id="q-options"></div>
+      <button id="q-next-btn" class="btn btn-p" style="width:100%;display:none" onclick="nextQuestion()">下一題 →</button>
+    </div>
+    <div id="quiz-result" style="display:none;text-align:center;padding:24px 0">
+      <div style="font-size:56px;margin-bottom:12px" id="r-emoji">🎉</div>
+      <h2 id="r-title">測驗完成！</h2>
+      <div class="text-muted mt8 mb12" id="r-subtitle"></div>
+      <div class="grid3 mb12" style="max-width:300px;margin:0 auto 16px">
+        <div class="stat-card"><div class="stat-label">答對</div><div class="stat-num" id="r-correct" style="color:var(--success)">-</div></div>
+        <div class="stat-card"><div class="stat-label">正確率</div><div class="stat-num" id="r-pct">-</div></div>
+        <div class="stat-card"><div class="stat-label">獲得積分</div><div class="stat-num" id="r-pts" style="color:var(--brand)">-</div></div>
+      </div>
+      <button class="btn btn-p" onclick="resetQuiz()">再考一次</button>
+    </div>
+  </div>
+  <div id="t-rank" style="display:none">
+    <div class="notice notice-i mb12">積分說明：答對 1 題 +10 分，完成課程 +50 分</div>
+    <div class="card" id="rank-list"><div class="loading">載入中...</div></div>
+  </div>
+</div>
+
+<div id="s-admin" class="screen">
+  <div class="header">
+    <div class="flex gap8">
+      <div class="avatar" style="background:var(--wl);color:var(--warn)">師</div>
+      <div><div class="bold" id="admin-name">老師</div><div class="text-muted" style="font-size:12px">出題者模式</div></div>
+    </div>
+    <button class="btn btn-sm" onclick="logout()">登出</button>
+  </div>
+  <div class="tab-bar">
+    <div class="tab active" onclick="adminTab('words',this)">單字管理</div>
+    <div class="tab" onclick="adminTab('import',this)">匯入單字</div>
+    <div class="tab" onclick="adminTab('courses',this)">課程管理</div>
+  </div>
+  <div id="at-words">
+    <div class="flex gap8 mb12">
+      <input id="search-word" class="mb0" placeholder="搜尋單字..." style="flex:1" oninput="renderWords()"/>
+      <select id="filter-course" class="mb0" style="width:auto;margin-left:8px" onchange="renderWords()"><option value="">所有課程</option></select>
+    </div>
+    <div id="word-list"><div class="loading">載入中...</div></div>
+  </div>
+  <div id="at-import" style="display:none">
+    <div class="notice notice-i mb12">格式：每行「英文, 中文, 詞性, 例句（選填）」</div>
+    <label>所屬課程</label>
+    <div class="flex gap8 mb12">
+      <select id="import-course" class="mb0" style="flex:1"></select>
+      <button class="btn btn-sm" style="white-space:nowrap" onclick="toggleBox('nc1')">+ 新課程</button>
+    </div>
+    <div id="nc1" style="display:none;margin-bottom:12px">
+      <div class="flex gap8"><input id="nc1-name" class="mb0" placeholder="新課程名稱" style="flex:1"/><button class="btn btn-sm btn-p" onclick="addCourse('nc1-name')">新增</button></div>
+    </div>
+    <label>單字列表</label>
+    <textarea id="import-text" rows="8" placeholder="apple, 蘋果, n., An apple a day keeps the doctor away.
+book, 書本, n.
+happy, 快樂的, adj."></textarea>
+    <button class="btn btn-p" style="width:100%" onclick="importWords()">匯入單字</button>
+    <div id="import-msg" style="margin-top:8px"></div>
+  </div>
+  <div id="at-courses" style="display:none">
+    <div id="admin-course-list"><div class="loading">載入中...</div></div>
+    <button class="btn btn-p mt12" style="width:100%" onclick="toggleBox('nc2')">+ 新增課程</button>
+    <div id="nc2" style="display:none;margin-top:12px">
+      <div class="flex gap8"><input id="nc2-name" class="mb0" placeholder="課程名稱" style="flex:1"/><button class="btn btn-sm btn-p" onclick="addCourse('nc2-name')">新增</button></div>
+    </div>
+  </div>
+</div>
+
+</div>
+</body>
+</html>
