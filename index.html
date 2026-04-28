@@ -43,6 +43,46 @@ async function delOne(col, id) {
 // ── state ────────────────────────────────────────────────────
 let CU = null, AW = [], AC = [];
 let SW = [], SI = 0, QW = [], QI = 0, QS = 0, QC = 0;
+let dailyMode = false;
+const UNSPLASH_KEY = 'YpPAMHEVCgNql4bLuSCKDpwAoGJWSAOi_6_IpTDY5IY';
+
+// ── image cache ───────────────────────────────────────────────
+const imgCache = {};
+async function fetchWordImage(word) {
+  const key = word.toLowerCase().split(' ')[0];
+  if (imgCache[key] !== undefined) return imgCache[key];
+  try {
+    const r = await fetch('https://api.unsplash.com/search/photos?query='+encodeURIComponent(key)+'&per_page=1&orientation=landscape&client_id='+UNSPLASH_KEY);
+    const d = await r.json();
+    const url = d.results?.[0]?.urls?.small || '';
+    imgCache[key] = url; return url;
+  } catch { imgCache[key]=''; return ''; }
+}
+
+// ── spaced repetition ─────────────────────────────────────────
+const SR_INTERVALS = [1, 2, 4, 7, 15];
+function todayStr() { return new Date().toISOString().slice(0,10); }
+function getDailyWords() {
+  const u = CU.data; const today = todayStr();
+  const sr = u.sr || {}; const known = u.known || {};
+  const due = [], newW = [];
+  AW.forEach(w => {
+    if (sr[w.id]) { if (sr[w.id].nextDate <= today) due.push(w); }
+    else if (!known[w.id]) { newW.push(w); }
+  });
+  const pool = [...due];
+  for (let i = 0; i < newW.length && pool.length < 20; i++) pool.push(newW[i]);
+  return pool;
+}
+async function markSR(wordId, remembered) {
+  const u = CU.data; const sr = {...(u.sr||{})};
+  const cur = sr[wordId] || { level: 0 };
+  let level = remembered ? Math.min(cur.level+1, SR_INTERVALS.length-1) : 0;
+  const days = SR_INTERVALS[level];
+  const next = new Date(); next.setDate(next.getDate()+days);
+  sr[wordId] = { level, nextDate: next.toISOString().slice(0,10) };
+  u.sr = sr; await updateOne('users', CU.name, { sr });
+}
 
 async function loadAll() {
   const [cs, ws] = await Promise.all([getAll('courses'), getAll('words')]);
@@ -91,7 +131,11 @@ window.stuTab = function(t, el) {
   el.classList.add('active');
   ['home','study','quiz','rank'].forEach(n => document.getElementById('t-'+n).style.display = n===t?'block':'none');
   if (t==='rank') renderRank();
-  if (t==='home') refreshHome();
+  if (t==='home') { dailyMode=false; refreshHome(); }
+  if (t==='study') {
+    const fb = document.getElementById('forgot-btn');
+    if (fb) fb.style.display = dailyMode ? 'inline-flex' : 'none';
+  }
 };
 
 async function refreshHome() {
@@ -103,6 +147,13 @@ async function refreshHome() {
   all.sort((a,b) => b.score - a.score);
   const ri = all.findIndex(x => x.id === CU.name);
   document.getElementById('h-rank').textContent = '#' + (ri+1);
+  // daily task
+  const daily = getDailyWords();
+  const sr = u.sr || {};
+  const reviewCount = daily.filter(w => sr[w.id]).length;
+  const newCount = daily.length - reviewCount;
+  document.getElementById('daily-count').textContent = daily.length > 0 ? daily.length + ' 個單字' : '今日已完成 🎉';
+  document.getElementById('daily-desc').textContent = daily.length > 0 ? '新單字 '+newCount+' 個・複習 '+reviewCount+' 個' : '明天繼續加油！';
   renderCL();
 }
 
@@ -125,13 +176,28 @@ function renderCL() {
 function loadSC() {
   const sel = document.getElementById('study-course'); sel.innerHTML='';
   AC.forEach(c => { const o=document.createElement('option'); o.value=c.id; o.textContent=c.name; sel.appendChild(o); });
-  loadStudy();
+  dailyMode=false; loadStudy();
 }
 window.loadStudy = function() {
+  dailyMode=false;
   SW = AW.filter(w => w.cid===document.getElementById('study-course').value);
   SI=0; showSC();
 };
-function showSC() {
+window.startDaily = function() {
+  dailyMode=true;
+  SW = getDailyWords();
+  if(!SW.length){ alert('今日任務已完成！明天再來。'); return; }
+  SI=0;
+  showSC();
+  document.getElementById('t-study').style.display='block';
+  document.getElementById('t-home').style.display='none';
+  const fb = document.getElementById('forgot-btn');
+  if(fb) fb.style.display='inline-flex';
+  // switch tab highlight
+  document.querySelectorAll('#s-student .tab').forEach(x=>x.classList.remove('active'));
+  document.querySelectorAll('#s-student .tab')[1].classList.add('active');
+};
+async function showSC() {
   const w = SW[SI];
   if (!w) { document.getElementById('study-en').textContent='（此課程無單字）'; return; }
   document.getElementById('flip-card').classList.remove('flipped');
@@ -141,6 +207,11 @@ function showSC() {
   document.getElementById('study-ex').textContent = w.ex||'';
   document.getElementById('study-progress').textContent = (SI+1)+'/'+SW.length;
   document.getElementById('study-bar').style.width = Math.round((SI+1)/SW.length*100)+'%';
+  // load image
+  const imgEl = document.getElementById('study-img');
+  imgEl.style.display='none'; imgEl.src='';
+  const url = await fetchWordImage(w.en);
+  if (url) { imgEl.src=url; imgEl.style.display='block'; }
 }
 window.flipCard = function() { document.getElementById('flip-card').classList.toggle('flipped'); };
 window.studyNav = function(d) { SI=Math.max(0,Math.min(SW.length-1,SI+d)); showSC(); };
@@ -158,6 +229,12 @@ window.markKnown = async function() {
     await updateOne('users', CU.name, { known, completed_courses: u.completed_courses, score: u.score });
     document.getElementById('stu-score').textContent = u.score;
   }
+  if (dailyMode) await markSR(w.id, true);
+  window.studyNav(1);
+};
+window.markForgot = async function() {
+  const w = SW[SI]; if (!w) return;
+  if (dailyMode) await markSR(w.id, false);
   window.studyNav(1);
 };
 
@@ -459,6 +536,16 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
       <div class="stat-card"><div class="stat-label">已學習</div><div class="stat-num" id="h-learned">0</div></div>
       <div class="stat-card"><div class="stat-label">我的排名</div><div class="stat-num" id="h-rank">#-</div></div>
     </div>
+    <div class="card mb12" style="background:linear-gradient(135deg,#2563eb,#1e40af);color:#fff;border:none">
+      <div style="display:flex;align-items:center;justify-content:space-between">
+        <div>
+          <div style="font-size:13px;opacity:0.85;margin-bottom:4px">📅 今日學習任務</div>
+          <div style="font-size:22px;font-weight:700" id="daily-count">載入中...</div>
+          <div style="font-size:12px;opacity:0.8;margin-top:2px" id="daily-desc"></div>
+        </div>
+        <button onclick="startDaily()" style="padding:9px 16px;border-radius:8px;border:none;background:rgba(255,255,255,0.2);color:#fff;cursor:pointer;font-size:14px;font-weight:600;backdrop-filter:blur(4px)">開始 →</button>
+      </div>
+    </div>
     <h3>課程進度</h3>
     <div class="card" id="course-list"><div class="loading">載入中...</div></div>
   </div>
@@ -469,13 +556,23 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
     </div>
     <div class="flip-card" id="flip-card" onclick="flipCard()">
       <div class="flip-inner">
-        <div class="flip-front"><div class="text-muted text-sm">英文單字（點擊翻面）</div><div class="word-en" id="study-en">-</div><div class="text-muted text-sm" id="study-pos"></div></div>
-        <div class="flip-back"><div class="text-muted text-sm">中文翻譯</div><div class="word-zh" id="study-zh">-</div><div class="text-sm mt8" id="study-ex" style="color:var(--brand-d);line-height:1.5"></div></div>
+        <div class="flip-front">
+          <img id="study-img" src="" alt="" style="display:none;width:100%;height:90px;object-fit:cover;border-radius:6px;margin-bottom:8px"/>
+          <div class="text-muted text-sm">英文單字（點擊翻面）</div>
+          <div class="word-en" id="study-en">-</div>
+          <div class="text-muted text-sm" id="study-pos"></div>
+        </div>
+        <div class="flip-back">
+          <div class="text-muted text-sm">中文翻譯</div>
+          <div class="word-zh" id="study-zh">-</div>
+          <div class="text-sm mt8" id="study-ex" style="color:var(--brand-d);line-height:1.5"></div>
+        </div>
       </div>
     </div>
     <div class="flex gap8" style="justify-content:center;margin-bottom:12px">
       <button class="btn" onclick="studyNav(-1)">← 上一個</button>
       <button class="btn btn-p" onclick="markKnown()">認識 ✓</button>
+      <button class="btn" id="forgot-btn" onclick="markForgot()" style="display:none;background:var(--dl);color:var(--danger);border-color:var(--danger)">忘記 ✗</button>
       <button class="btn" onclick="studyNav(1)">下一個 →</button>
     </div>
     <div class="progress-bar"><div class="progress-fill" id="study-bar" style="width:0%"></div></div>
