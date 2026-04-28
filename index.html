@@ -244,40 +244,102 @@ function loadQC() {
   AC.forEach(c => { const o=document.createElement('option'); o.value=c.id; o.textContent=c.name; sel.appendChild(o); });
 }
 function shuffle(a) { for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]];}return a; }
+
+// decide question type: 'mc'=選擇 'fill'=填充
+function getQType(mode) {
+  if (mode==='mc') return 'mc';
+  if (mode==='fill') return 'fill';
+  return Math.random()<0.5 ? 'mc' : 'fill'; // mixed
+}
+
 window.startQuiz = function() {
   const cid = document.getElementById('quiz-course').value;
   const cnt = parseInt(document.getElementById('quiz-count').value);
+  const mode = document.getElementById('quiz-mode').value;
   const pool = AW.filter(w => w.cid===cid);
   if (pool.length<4) { alert('該課程單字不足 4 個，無法出題'); return; }
   QW=shuffle([...pool]).slice(0,Math.min(cnt,pool.length));
   QI=0; QS=0; QC=0;
+  window._quizMode = mode;
   document.getElementById('quiz-setup').style.display='none';
   document.getElementById('quiz-game').style.display='block';
   document.getElementById('quiz-result').style.display='none';
   showQ();
 };
+
 function showQ() {
   const w = QW[QI];
+  const qtype = getQType(window._quizMode||'mc');
+  QW[QI]._qtype = qtype;
   document.getElementById('q-progress').textContent=(QI+1)+'/'+QW.length;
   document.getElementById('q-score-tag').textContent='積分：'+QS;
-  document.getElementById('q-word').textContent=w.en;
-  document.getElementById('q-pos').textContent=w.pos||'';
   document.getElementById('q-next-btn').style.display='none';
   const opts=document.getElementById('q-options'); opts.innerHTML='';
-  const others=shuffle(AW.filter(x=>x.id!==w.id)).slice(0,3);
-  shuffle([w,...others]).forEach(c=>{
-    const btn=document.createElement('button'); btn.className='quiz-opt'; btn.textContent=c.zh;
-    btn.onclick=()=>answerQ(btn,c.id===w.id,w.id); opts.appendChild(btn);
-  });
+
+  if (qtype==='fill') {
+    // 填充題：顯示中文，填英文
+    document.getElementById('q-word').textContent=w.zh;
+    document.getElementById('q-pos').textContent=(w.pos?w.pos+' ':'')+'（請拼出英文單字）';
+    document.getElementById('q-question-label').textContent='請拼出正確的英文單字：';
+    opts.innerHTML=`
+      <div style="margin-bottom:12px">
+        <input id="fill-input" type="text" placeholder="輸入英文單字..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+          style="font-size:18px;padding:12px 14px;border-radius:8px;border:2px solid var(--border);width:100%;background:var(--surface);color:var(--text);letter-spacing:1px"
+          onkeydown="if(event.key==='Enter')submitFill()"/>
+      </div>
+      <button class="btn btn-p" style="width:100%" onclick="submitFill()">確認答案</button>
+      <div id="fill-result" style="margin-top:10px;font-size:14px;display:none"></div>`;
+    setTimeout(()=>{ const el=document.getElementById('fill-input'); if(el) el.focus(); }, 100);
+  } else {
+    // 選擇題：顯示英文，選中文
+    document.getElementById('q-word').textContent=w.en;
+    document.getElementById('q-pos').textContent=w.pos||'';
+    document.getElementById('q-question-label').textContent='以下哪個是正確翻譯？';
+    const others=shuffle(AW.filter(x=>x.id!==w.id)).slice(0,3);
+    shuffle([w,...others]).forEach(c=>{
+      const btn=document.createElement('button'); btn.className='quiz-opt'; btn.textContent=c.zh;
+      btn.onclick=()=>answerMC(btn,c.id===w.id,w.id); opts.appendChild(btn);
+    });
+  }
 }
-async function answerQ(btn, correct, wid) {
+
+window.submitFill = function() {
+  const input = document.getElementById('fill-input'); if(!input)return;
+  const ans = input.value.trim();
+  if(!ans) return;
+  const w = QW[QI];
+  const correct = ans.toLowerCase() === w.en.toLowerCase();
+  input.disabled = true;
+  document.querySelector('#q-options button').disabled = true;
+  const res = document.getElementById('fill-result');
+  res.style.display='block';
+  if (correct) {
+    input.style.borderColor='var(--success)'; input.style.background='var(--sl)';
+    res.style.color='var(--success)';
+    res.innerHTML='✓ 正確！';
+    updateScore(w.id);
+  } else {
+    input.style.borderColor='var(--danger)'; input.style.background='var(--dl)';
+    res.style.color='var(--danger)';
+    res.innerHTML='✗ 答錯了，正確答案是：<strong>'+w.en+'</strong>';
+  }
+  document.getElementById('q-next-btn').style.display='block';
+};
+
+async function updateScore(wid) {
+  QS+=10; QC++;
+  const u=CU.data; u.score=(u.score||0)+10;
+  const known={...(u.known||{})}; known[wid]=true; u.known=known;
+  await updateOne('users', CU.name, { score: u.score, known });
+  document.getElementById('stu-score').textContent=u.score;
+  document.getElementById('q-score-tag').textContent='積分：'+QS;
+}
+
+async function answerMC(btn, correct, wid) {
   document.querySelectorAll('.quiz-opt').forEach(b=>b.onclick=null);
   if (correct) {
-    btn.classList.add('correct'); QS+=10; QC++;
-    const u=CU.data; u.score=(u.score||0)+10;
-    const known={...(u.known||{})}; known[wid]=true; u.known=known;
-    await updateOne('users', CU.name, { score: u.score, known });
-    document.getElementById('stu-score').textContent=u.score;
+    btn.classList.add('correct');
+    await updateScore(wid);
   } else {
     btn.classList.add('wrong');
     const cz=AW.find(w=>w.id===wid)?.zh;
@@ -285,7 +347,9 @@ async function answerQ(btn, correct, wid) {
   }
   document.getElementById('q-next-btn').style.display='block';
 }
+
 window.nextQuestion = function() { QI++; if(QI>=QW.length){showResult();return;} showQ(); };
+
 function showResult() {
   document.getElementById('quiz-game').style.display='none';
   document.getElementById('quiz-result').style.display='block';
@@ -475,6 +539,7 @@ label{display:block;font-size:13px;font-weight:500;color:var(--muted);margin-bot
 .quiz-opt:hover{background:var(--bg)}
 .quiz-opt.correct{background:var(--sl);border-color:var(--success);color:var(--success);font-weight:500}
 .quiz-opt.wrong{background:var(--dl);border-color:var(--danger);color:var(--danger)}
+#fill-input:disabled{cursor:default}
 .rank-row{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border)}
 .rank-row:last-child{border-bottom:none}
 .course-row{display:flex;align-items:center;gap:10px;padding:11px 0;border-bottom:1px solid var(--border)}
@@ -582,6 +647,12 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
       <label>選擇課程</label><select id="quiz-course"></select>
       <label>題目數量</label>
       <select id="quiz-count"><option value="5">5 題</option><option value="10" selected>10 題</option><option value="20">20 題</option></select>
+      <label>出題類型</label>
+      <select id="quiz-mode">
+        <option value="mc">選擇題（看英文選中文）</option>
+        <option value="fill">填充題（看中文填英文）</option>
+        <option value="mixed">混合（隨機各半）</option>
+      </select>
       <button class="btn btn-p" style="width:100%;margin-top:4px" onclick="startQuiz()">開始考核</button>
     </div>
     <div id="quiz-game" style="display:none">
@@ -590,7 +661,7 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
         <span class="tag tag-b" id="q-score-tag">積分：0</span>
       </div>
       <div class="card mb12">
-        <div class="text-muted text-sm mb8">以下哪個是正確翻譯？</div>
+        <div class="text-muted text-sm mb8" id="q-question-label">以下哪個是正確翻譯？</div>
         <div class="word-en" style="font-size:24px" id="q-word">word</div>
         <div class="text-muted text-sm" id="q-pos"></div>
       </div>
