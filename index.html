@@ -44,6 +44,9 @@ async function delOne(col, id) {
 let CU = null, AW = [], AC = [];
 let SW = [], SI = 0, QW = [], QI = 0, QS = 0, QC = 0;
 let dailyMode = false;
+let dailyWordIds = new Set(); // IDs of today's daily words, fixed at task start
+let dailyPhase = 'study'; // 'study' | 'quiz'
+let dailyQuizWords = [], dailyQI = 0, dailyQS = 0, dailyQC = 0;
 const UNSPLASH_KEY = 'YpPAMHEVCgNql4bLuSCKDpwAoGJWSAOi_6_IpTDY5IY';
 
 // ── image cache ───────────────────────────────────────────────
@@ -82,11 +85,15 @@ async function markSR(wordId, remembered) {
   const next = new Date(); next.setDate(next.getDate()+days);
   sr[wordId] = { level, nextDate: next.toISOString().slice(0,10) };
   u.sr = sr;
-  // record daily progress
+  // record daily progress — only count each word once per day
   const today = todayStr();
   const dp = {...(u.daily_progress||{})};
-  if (!dp[today]) dp[today] = { total: getDailyWords().length, done: 0 };
-  dp[today].done = Math.min((dp[today].done||0) + 1, dp[today].total);
+  if (!dp[today]) dp[today] = { total: dailyWordIds.size, done: 0, doneIds: [] };
+  if (!dp[today].doneIds) dp[today].doneIds = [];
+  if (!dp[today].doneIds.includes(wordId)) {
+    dp[today].doneIds.push(wordId);
+    dp[today].done = dp[today].doneIds.length;
+  }
   u.daily_progress = dp;
   await updateOne('users', CU.name, { sr, daily_progress: dp });
 }
@@ -191,16 +198,29 @@ window.loadStudy = function() {
   SI=0; showSC();
 };
 window.startDaily = function() {
-  dailyMode=true;
+  const today = todayStr();
+  const u = CU.data;
+  const dp = u.daily_progress||{};
+  // if already fully completed today, show message
+  if (dp[today] && dp[today].quizDone) { alert('🎉 今日任務已全部完成！明天再來。'); return; }
+  dailyMode = true;
+  dailyPhase = 'study';
   SW = getDailyWords();
-  if(!SW.length){ alert('今日任務已完成！明天再來。'); return; }
-  SI=0;
+  if (!SW.length) { alert('🎉 今日任務已完成！明天再來。'); return; }
+  // lock in today's word IDs (prevents re-counting on repeat)
+  dailyWordIds = new Set(SW.map(w => w.id));
+  // init daily progress record if not yet
+  if (!dp[today]) {
+    dp[today] = { total: SW.length, done: 0, doneIds: [], quizDone: false };
+    u.daily_progress = dp;
+    updateOne('users', CU.name, { daily_progress: dp });
+  }
+  SI = 0;
   showSC();
   document.getElementById('t-study').style.display='block';
   document.getElementById('t-home').style.display='none';
   const fb = document.getElementById('forgot-btn');
   if(fb) fb.style.display='inline-flex';
-  // switch tab highlight
   document.querySelectorAll('#s-student .tab').forEach(x=>x.classList.remove('active'));
   document.querySelectorAll('#s-student .tab')[1].classList.add('active');
 };
@@ -221,7 +241,16 @@ async function showSC() {
   if (url) { imgEl.src=url; imgEl.style.display='block'; }
 }
 window.flipCard = function() { document.getElementById('flip-card').classList.toggle('flipped'); };
-window.studyNav = function(d) { SI=Math.max(0,Math.min(SW.length-1,SI+d)); showSC(); };
+window.studyNav = function(d) {
+  const next = SI + d;
+  if (dailyMode && dailyPhase==='study' && next >= SW.length) {
+    // all words reviewed — start daily quiz phase
+    startDailyQuiz();
+    return;
+  }
+  SI = Math.max(0, Math.min(SW.length-1, next));
+  showSC();
+};
 window.markKnown = async function() {
   const w = SW[SI]; if (!w) return;
   const u = CU.data; const known = {...(u.known||{})};
@@ -244,6 +273,168 @@ window.markForgot = async function() {
   if (dailyMode) await markSR(w.id, false);
   window.studyNav(1);
 };
+
+function startDailyQuiz() {
+  dailyPhase = 'quiz';
+  // shuffle words, each word appears once (mixed mc/fill)
+  dailyQuizWords = shuffle([...SW]);
+  dailyQI = 0; dailyQS = 0; dailyQC = 0;
+  // show daily quiz overlay inside study tab
+  const studyTab = document.getElementById('t-study');
+  studyTab.innerHTML = `
+    <div id="dq-header" class="flex mb12" style="justify-content:space-between;align-items:center">
+      <div>
+        <div class="bold text-sm">📝 每日測驗</div>
+        <div class="text-muted" style="font-size:12px">完成測驗才算今日任務完成</div>
+      </div>
+      <span class="tag tag-b" id="dq-progress">1 / ${dailyQuizWords.length}</span>
+    </div>
+    <div class="card mb12" id="dq-question-card">
+      <div class="text-muted text-sm mb8" id="dq-label"></div>
+      <div style="font-size:22px;font-weight:700" id="dq-word"></div>
+      <div class="text-muted text-sm" id="dq-pos"></div>
+    </div>
+    <div id="dq-options"></div>
+    <button id="dq-next" class="btn btn-p" style="width:100%;display:none" onclick="dailyQuizNext()">下一題 →</button>
+    <div class="progress-bar mt12"><div class="progress-fill" id="dq-bar" style="width:0%"></div></div>`;
+  showDailyQuestion();
+}
+
+function showDailyQuestion() {
+  const w = dailyQuizWords[dailyQI];
+  const pct = Math.round((dailyQI+1)/dailyQuizWords.length*100);
+  document.getElementById('dq-progress').textContent = (dailyQI+1)+' / '+dailyQuizWords.length;
+  document.getElementById('dq-bar').style.width = pct+'%';
+  document.getElementById('dq-next').style.display = 'none';
+  document.getElementById('dq-options').innerHTML = '';
+  // alternate: even index = mc, odd index = fill
+  const isFill = dailyQI % 2 === 1;
+  if (isFill) {
+    document.getElementById('dq-label').textContent = '請拼出正確的英文單字：';
+    document.getElementById('dq-word').textContent = w.zh;
+    document.getElementById('dq-pos').textContent = w.pos ? '(' + w.pos + ')' : '';
+    document.getElementById('dq-options').innerHTML = `
+      <div style="margin-bottom:10px">
+        <input id="dq-fill" type="text" placeholder="輸入英文單字..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+          style="font-size:18px;padding:12px;border-radius:8px;border:2px solid var(--border);width:100%;background:var(--surface);color:var(--text)"
+          onkeydown="if(event.key==='Enter')submitDailyFill()"/>
+      </div>
+      <button class="btn btn-p" style="width:100%" onclick="submitDailyFill()">確認</button>
+      <div id="dq-fill-result" style="margin-top:8px;font-size:14px;display:none"></div>`;
+    setTimeout(()=>{ const el=document.getElementById('dq-fill'); if(el) el.focus(); }, 80);
+  } else {
+    document.getElementById('dq-label').textContent = '以下哪個是正確翻譯？';
+    document.getElementById('dq-word').textContent = w.en;
+    document.getElementById('dq-pos').textContent = w.pos||'';
+    const others = shuffle(AW.filter(x=>x.id!==w.id)).slice(0,3);
+    const opts = document.getElementById('dq-options');
+    shuffle([w,...others]).forEach(c => {
+      const btn = document.createElement('button');
+      btn.className = 'quiz-opt'; btn.textContent = c.zh;
+      btn.onclick = () => answerDailyMC(btn, c.id===w.id, w.id);
+      opts.appendChild(btn);
+    });
+  }
+}
+
+window.submitDailyFill = function() {
+  const input = document.getElementById('dq-fill'); if(!input||input.disabled) return;
+  const ans = input.value.trim(); if(!ans) return;
+  const w = dailyQuizWords[dailyQI];
+  const correct = ans.toLowerCase() === w.en.toLowerCase();
+  input.disabled = true;
+  document.querySelectorAll('#dq-options button').forEach(b=>b.disabled=true);
+  const res = document.getElementById('dq-fill-result');
+  res.style.display = 'block';
+  if (correct) {
+    input.style.borderColor='var(--success)'; input.style.background='var(--sl)';
+    res.style.color='var(--success)'; res.textContent='✓ 正確！';
+    dailyQS+=10; dailyQC++;
+    recordDailyAnswer(w.id, true);
+  } else {
+    input.style.borderColor='var(--danger)'; input.style.background='var(--dl)';
+    res.style.color='var(--danger)'; res.innerHTML='✗ 正確答案是：<strong>'+w.en+'</strong>';
+    recordDailyAnswer(w.id, false);
+  }
+  document.getElementById('dq-next').style.display='block';
+};
+
+function answerDailyMC(btn, correct, wid) {
+  document.querySelectorAll('.quiz-opt').forEach(b=>b.onclick=null);
+  if (correct) {
+    btn.classList.add('correct'); dailyQS+=10; dailyQC++;
+    recordDailyAnswer(wid, true);
+  } else {
+    btn.classList.add('wrong');
+    const cz = AW.find(w=>w.id===wid)?.zh;
+    document.querySelectorAll('.quiz-opt').forEach(b=>{if(b.textContent===cz)b.classList.add('correct');});
+    recordDailyAnswer(wid, false);
+  }
+  document.getElementById('dq-next').style.display='block';
+}
+
+async function recordDailyAnswer(wid, correct) {
+  const u = CU.data;
+  // update quiz_stats
+  const qs = {...(u.quiz_stats||{})};
+  if (!qs[wid]) qs[wid] = { attempts:0, correct:0 };
+  qs[wid].attempts++; if(correct) qs[wid].correct++;
+  u.quiz_stats = qs;
+  // update score
+  if (correct) {
+    u.score = (u.score||0) + 10;
+    document.getElementById('stu-score').textContent = u.score;
+  }
+  await updateOne('users', CU.name, { quiz_stats: qs, score: u.score });
+}
+
+window.dailyQuizNext = function() {
+  dailyQI++;
+  if (dailyQI >= dailyQuizWords.length) {
+    finishDailyTask();
+    return;
+  }
+  showDailyQuestion();
+};
+
+async function finishDailyTask() {
+  const u = CU.data;
+  const today = todayStr();
+  const dp = {...(u.daily_progress||{})};
+  if (!dp[today]) dp[today] = { total: dailyQuizWords.length, done: dailyQuizWords.length, doneIds: dailyQuizWords.map(w=>w.id), quizDone: false };
+  dp[today].quizDone = true;
+  dp[today].done = dp[today].total;
+  u.daily_progress = dp;
+  // complete course check for all studied words
+  const known = {...(u.known||{})};
+  const comp = [...(u.completed_courses||[])];
+  let scoreBonus = 0;
+  dailyQuizWords.forEach(w => { known[w.id] = true; });
+  AC.forEach(c => {
+    const ws = AW.filter(x=>x.cid===c.id);
+    if (ws.length && ws.every(x=>known[x.id]) && !comp.includes(c.id)) {
+      comp.push(c.id); scoreBonus += 50;
+    }
+  });
+  u.known = known; u.completed_courses = comp; u.score = (u.score||0) + scoreBonus;
+  await updateOne('users', CU.name, { daily_progress: dp, known, completed_courses: comp, score: u.score });
+  document.getElementById('stu-score').textContent = u.score;
+  const pct = Math.round(dailyQC/dailyQuizWords.length*100);
+  const emoji = pct>=80?'🎉':pct>=50?'👍':'📖';
+  document.getElementById('t-study').innerHTML = `
+    <div style="text-align:center;padding:32px 16px">
+      <div style="font-size:56px;margin-bottom:12px">${emoji}</div>
+      <h2 style="margin-bottom:8px">${pct>=80?'太棒了！':pct>=50?'不錯喔！':'繼續加油！'}</h2>
+      <div class="text-muted mb12">今日任務完成！背誦 ${dailyQuizWords.length} 個單字・測驗正確率 ${pct}%</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;max-width:280px;margin:0 auto 20px">
+        <div class="stat-card"><div class="stat-label">測驗題數</div><div class="stat-num">${dailyQuizWords.length}</div></div>
+        <div class="stat-card"><div class="stat-label">答對</div><div class="stat-num" style="color:var(--success)">${dailyQC}</div></div>
+        <div class="stat-card"><div class="stat-label">獲得積分</div><div class="stat-num" style="color:var(--brand)">+${dailyQS+(scoreBonus)}</div></div>
+      </div>
+      <button class="btn btn-p" onclick="stuTab('home', document.querySelector('#s-student .tab'))">回主頁</button>
+    </div>`;
+  dailyMode = false;
+}
 
 // ── quiz ─────────────────────────────────────────────────────
 function loadQC() {
@@ -936,7 +1127,15 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
     </div>
   </div>
   <div id="t-rank" style="display:none">
-    <div class="notice notice-i mb12">積分說明：答對 1 題 +10 分，完成課程 +50 分</div>
+    <div class="card mb12" style="background:var(--brand-l);border-color:var(--brand-l)">
+      <div class="bold text-sm mb8" style="color:var(--brand-d)">💡 積分規則說明</div>
+      <div style="font-size:13px;color:var(--brand-d);line-height:1.8">
+        ・測驗答對 1 題 <b>+10 分</b>（選擇題 / 填充題皆適用）<br>
+        ・每日任務測驗答對 1 題 <b>+10 分</b><br>
+        ・完成一個課程所有單字 <b>+50 分</b><br>
+        ・重複作答同一題不重複加分（每題每天只算一次）
+      </div>
+    </div>
     <div class="card" id="rank-list"><div class="loading">載入中...</div></div>
   </div>
 </div>
