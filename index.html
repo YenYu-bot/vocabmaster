@@ -81,7 +81,14 @@ async function markSR(wordId, remembered) {
   const days = SR_INTERVALS[level];
   const next = new Date(); next.setDate(next.getDate()+days);
   sr[wordId] = { level, nextDate: next.toISOString().slice(0,10) };
-  u.sr = sr; await updateOne('users', CU.name, { sr });
+  u.sr = sr;
+  // record daily progress
+  const today = todayStr();
+  const dp = {...(u.daily_progress||{})};
+  if (!dp[today]) dp[today] = { total: getDailyWords().length, done: 0 };
+  dp[today].done = Math.min((dp[today].done||0) + 1, dp[today].total);
+  u.daily_progress = dp;
+  await updateOne('users', CU.name, { sr, daily_progress: dp });
 }
 
 async function loadAll() {
@@ -386,10 +393,11 @@ async function renderRank() {
 window.adminTab = function(t, el) {
   document.querySelectorAll('#s-admin .tab').forEach(x=>x.classList.remove('active'));
   el.classList.add('active');
-  ['words','import','courses'].forEach(n=>document.getElementById('at-'+n).style.display=n===t?'block':'none');
+  ['words','import','courses','students'].forEach(n=>document.getElementById('at-'+n).style.display=n===t?'block':'none');
   if(t==='words'){renderWords();updateFC();}
   if(t==='courses') renderAdminCourses();
   if(t==='import') updateIC();
+  if(t==='students') renderStudentList();
 };
 function updateFC() {
   const sel=document.getElementById('filter-course'); if(!sel)return;
@@ -557,6 +565,154 @@ window.deleteCourse = async function(id) {
   AC=AC.filter(c=>c.id!==id); AW=AW.filter(w=>w.cid!==id);
   renderAdminCourses(); updateFC(); updateIC(); window.renderWords();
 };
+
+// ── student progress ──────────────────────────────────────────
+async function renderStudentList() {
+  const list = document.getElementById('student-list-view');
+  list.innerHTML = '<div class="loading">載入中...</div>';
+  const all = await getAll('users');
+  all.sort((a,b) => b.score - a.score);
+  const today = todayStr();
+  list.innerHTML = '';
+  if (!all.length) { list.innerHTML = '<p class="text-muted text-sm" style="padding:8px">尚無學生資料</p>'; return; }
+
+  // summary stats bar
+  const totalStu = all.length;
+  const doneTodayStu = all.filter(u => {
+    const dp = u.daily_progress||{};
+    return dp[today] && dp[today].done >= dp[today].total && dp[today].total > 0;
+  }).length;
+  const summaryEl = document.createElement('div');
+  summaryEl.className = 'card mb12';
+  summaryEl.style.cssText = 'background:linear-gradient(135deg,#2563eb,#1e40af);color:#fff;border:none';
+  summaryEl.innerHTML = `
+    <div style="font-size:13px;opacity:0.85;margin-bottom:6px">📊 今日完成每日任務</div>
+    <div style="font-size:28px;font-weight:700">${doneTodayStu} <span style="font-size:16px;opacity:0.8">/ ${totalStu} 位學生</span></div>
+    <div style="height:6px;background:rgba(255,255,255,0.2);border-radius:99px;margin-top:10px;overflow:hidden">
+      <div style="height:100%;background:#fff;border-radius:99px;width:${totalStu?Math.round(doneTodayStu/totalStu*100):0}%;transition:width 0.4s"></div>
+    </div>`;
+  list.appendChild(summaryEl);
+
+  all.forEach((u, i) => {
+    const known = Object.keys(u.known||{}).length;
+    const comp = (u.completed_courses||[]).length;
+    const dp = u.daily_progress||{};
+    const todayDp = dp[today];
+    let dailyTag = '';
+    if (!todayDp || todayDp.total === 0) {
+      dailyTag = '<span class="tag" style="background:#f1f5f9;color:#64748b">今日無任務</span>';
+    } else if (todayDp.done >= todayDp.total) {
+      dailyTag = '<span class="tag tag-g">✓ 今日完成</span>';
+    } else {
+      const pct = Math.round(todayDp.done / todayDp.total * 100);
+      dailyTag = `<span class="tag tag-a">${todayDp.done}/${todayDp.total} (${pct}%)</span>`;
+    }
+    const medal = i===0?'🥇':i===1?'🥈':i===2?'🥉':'';
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border);cursor:pointer';
+    row.innerHTML = `
+      <div style="width:22px;text-align:center;font-size:14px">${medal||'<span style="font-size:12px;color:var(--muted)">#'+(i+1)+'</span>'}</div>
+      <div class="avatar">${u.id[0]}</div>
+      <div style="flex:1">
+        <div class="flex gap8 mb8"><span class="bold text-sm">${u.id}</span>${dailyTag}</div>
+        <div class="text-muted" style="font-size:12px">積分 ${u.score} · 已學 ${known} 個 · 完成 ${comp} 課</div>
+      </div>
+      <span style="color:var(--brand);font-size:18px">›</span>`;
+    row.onclick = () => showStudentDetail(u);
+    list.appendChild(row);
+  });
+}
+
+function showStudentList() {
+  document.getElementById('stu-panel-title').textContent = '所有學生';
+  document.getElementById('stu-back-btn').style.display = 'none';
+  document.getElementById('student-list-view').style.display = 'block';
+  document.getElementById('student-detail-view').style.display = 'none';
+}
+
+function showStudentDetail(u) {
+  document.getElementById('stu-panel-title').textContent = u.id + ' 的學習進度';
+  document.getElementById('stu-back-btn').style.display = 'inline-flex';
+  document.getElementById('student-list-view').style.display = 'none';
+  const detail = document.getElementById('student-detail-view');
+  detail.style.display = 'block';
+  detail.innerHTML = '';
+
+  const known = u.known||{};
+  const comp = u.completed_courses||[];
+  const sr = u.sr||{};
+  const dp = u.daily_progress||{};
+  const today = todayStr();
+
+  // top stats
+  const topEl = document.createElement('div');
+  topEl.className = 'grid3 mb12';
+  topEl.innerHTML = `
+    <div class="stat-card"><div class="stat-label">總積分</div><div class="stat-num" style="color:var(--brand)">${u.score}</div></div>
+    <div class="stat-card"><div class="stat-label">已學單字</div><div class="stat-num">${Object.keys(known).length}</div></div>
+    <div class="stat-card"><div class="stat-label">完成課程</div><div class="stat-num" style="color:var(--success)">${comp.length}</div></div>`;
+  detail.appendChild(topEl);
+
+  // daily progress history (last 7 days)
+  const histEl = document.createElement('div');
+  histEl.className = 'card mb12';
+  let histHTML = '<div class="bold text-sm mb8">📅 近 7 天每日任務</div><div style="display:flex;gap:6px;flex-wrap:wrap">';
+  for (let i=6; i>=0; i--) {
+    const d = new Date(); d.setDate(d.getDate()-i);
+    const ds = d.toISOString().slice(0,10);
+    const dpDay = dp[ds];
+    const label = i===0 ? '今' : (d.getMonth()+1)+'/'+(d.getDate());
+    let bg, color, icon;
+    if (!dpDay || dpDay.total===0) { bg='#f1f5f9'; color='#94a3b8'; icon='—'; }
+    else if (dpDay.done >= dpDay.total) { bg='var(--sl)'; color='var(--success)'; icon='✓'; }
+    else { bg='var(--wl)'; color='var(--warn)'; icon=dpDay.done+'/'+dpDay.total; }
+    histHTML += `<div style="background:${bg};color:${color};border-radius:8px;padding:6px 10px;text-align:center;font-size:12px;font-weight:500;min-width:40px">
+      <div>${label}</div><div style="font-size:11px;margin-top:2px">${icon}</div></div>`;
+  }
+  histHTML += '</div>';
+  histEl.innerHTML = histHTML;
+  detail.appendChild(histEl);
+
+  // SR stats
+  const srWords = Object.keys(sr);
+  const srLevels = [0,0,0,0,0];
+  srWords.forEach(wid => { const lv = sr[wid]?.level||0; srLevels[Math.min(lv,4)]++; });
+  const srEl = document.createElement('div');
+  srEl.className = 'card mb12';
+  srEl.innerHTML = `<div class="bold text-sm mb8">🧠 遺忘曲線進度</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">
+      ${['初學','第2次','第3次','第4次','熟練'].map((label,i)=>`
+        <div style="flex:1;min-width:56px;background:var(--bg);border-radius:8px;padding:8px;text-align:center;border:1px solid var(--border)">
+          <div class="text-muted" style="font-size:11px">${label}</div>
+          <div style="font-size:18px;font-weight:700;color:var(--brand);margin-top:2px">${srLevels[i]}</div>
+        </div>`).join('')}
+    </div>`;
+  detail.appendChild(srEl);
+
+  // course progress
+  const courseEl = document.createElement('div');
+  courseEl.className = 'card';
+  let courseHTML = '<div class="bold text-sm mb8">📚 課程完成狀況</div>';
+  if (!AC.length) { courseHTML += '<p class="text-muted text-sm">尚無課程</p>'; }
+  else {
+    AC.forEach(c => {
+      const ws = AW.filter(w => w.cid===c.id);
+      const done = ws.filter(w => known[w.id]).length;
+      const pct = ws.length ? Math.round(done/ws.length*100) : 0;
+      const isComp = comp.includes(c.id);
+      courseHTML += `<div style="padding:8px 0;border-bottom:1px solid var(--border)">
+        <div class="flex gap8 mb8">
+          <span class="text-sm">${c.name}</span>
+          <span class="tag ${isComp?'tag-g':'tag-a'}" style="font-size:11px">${isComp?'✓ 完成':'進行中'}</span>
+          <span class="text-muted" style="font-size:12px;margin-left:auto">${done}/${ws.length}</span>
+        </div>
+        <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>
+      </div>`;
+    });
+  }
+  courseEl.innerHTML = courseHTML;
+  detail.appendChild(courseEl);
+}
 </script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -750,6 +906,7 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
     <div class="tab active" onclick="adminTab('words',this)">單字管理</div>
     <div class="tab" onclick="adminTab('import',this)">匯入單字</div>
     <div class="tab" onclick="adminTab('courses',this)">課程管理</div>
+    <div class="tab" onclick="adminTab('students',this)">學生進度</div>
   </div>
   <div id="at-words">
     <div class="flex gap8 mb12">
@@ -789,6 +946,15 @@ happy, 快樂的, adj."></textarea>
     <div id="nc2" style="display:none;margin-top:12px">
       <div class="flex gap8"><input id="nc2-name" class="mb0" placeholder="課程名稱" style="flex:1"/><button class="btn btn-sm btn-p" onclick="addCourse('nc2-name')">新增</button></div>
     </div>
+  </div>
+
+  <div id="at-students" style="display:none">
+    <div class="flex gap8 mb12" style="justify-content:space-between;align-items:center">
+      <span class="bold text-sm" id="stu-panel-title">所有學生</span>
+      <button id="stu-back-btn" class="btn btn-sm" style="display:none" onclick="showStudentList()">← 返回列表</button>
+    </div>
+    <div id="student-list-view"><div class="loading">載入中...</div></div>
+    <div id="student-detail-view" style="display:none"></div>
   </div>
 </div>
 
