@@ -48,6 +48,8 @@ let dailyWordIds = new Set();
 let dailyPhase = 'study';
 let dailyQuizWords = [], dailyQI = 0, dailyQS = 0, dailyQC = 0;
 let wrongWords = []; // track wrong answers in daily quiz
+let dailyRetryCount = 0; // how many retries done today
+const PASS_THRESHOLD = 0.9; // 90% to pass
 const UNSPLASH_KEY = 'YpPAMHEVCgNql4bLuSCKDpwAoGJWSAOi_6_IpTDY5IY';
 
 // ── image cache ───────────────────────────────────────────────
@@ -393,6 +395,7 @@ function startDailyQuiz() {
   dailyPhase = 'quiz';
   dailyQuizWords = shuffle([...SW]);
   dailyQI = 0; dailyQS = 0; dailyQC = 0; wrongWords = [];
+  dailyRetryCount = 0;
   // mark quizStarted for resume
   const u = CU.data; const today = todayStr();
   const dp = {...(u.daily_progress||{})};
@@ -409,7 +412,7 @@ function startDailyQuizFromWords(words, totalCount) {
     <div id="dq-header" class="flex mb12" style="justify-content:space-between;align-items:center">
       <div>
         <div class="bold text-sm">📝 每日測驗</div>
-        <div class="text-muted" style="font-size:12px">完成測驗才算今日任務完成</div>
+        <div class="text-muted" style="font-size:12px">需達 90% 才算完成今日任務</div>
       </div>
       <span class="tag tag-b" id="dq-progress">1 / ${totalCount}</span>
     </div>
@@ -535,18 +538,55 @@ window.dailyQuizNext = function() {
 async function finishDailyTask() {
   const u = CU.data;
   const today = todayStr();
+  const totalWords = SW.length; // always use original total for pct calculation
+  const pct = Math.round(dailyQC / totalWords * 100);
+  const passed = pct >= PASS_THRESHOLD * 100;
+
+  // ── if not passed → show retry screen ────────────────────────
+  if (!passed) {
+    dailyRetryCount++;
+    const wrongList = wrongWords.map(wid => AW.find(w=>w.id===wid)).filter(Boolean);
+    document.getElementById('t-study').innerHTML = `
+      <div style="padding:24px 4px">
+        <div style="text-align:center;margin-bottom:16px">
+          <div style="font-size:52px;margin-bottom:8px">😅</div>
+          <h2 style="margin-bottom:6px;color:var(--danger)">未達標！請重新測驗</h2>
+          <div class="text-muted" style="font-size:13px">需達 90% 才算完成，本次正確率 ${pct}%</div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px">
+          <div class="stat-card"><div class="stat-label">總題數</div><div class="stat-num">${totalWords}</div></div>
+          <div class="stat-card"><div class="stat-label">本次正確率</div><div class="stat-num" style="color:var(--danger)">${pct}%</div></div>
+          <div class="stat-card"><div class="stat-label">第 ${dailyRetryCount} 次重試</div><div class="stat-num" style="color:var(--warn)">${wrongList.length} 錯</div></div>
+        </div>
+        <div style="text-align:left;margin-bottom:16px">
+          <div class="bold text-sm mb8" style="color:var(--danger)">❌ 答錯的單字（${wrongList.length} 個）</div>
+          ${wrongList.map(w=>`
+            <div style="display:flex;justify-content:space-between;padding:7px 10px;background:var(--dl);border-radius:6px;margin-bottom:5px;font-size:13px">
+              <span style="font-weight:600;color:var(--danger)">${w.en}</span>
+              <span style="color:var(--text)">${w.zh}</span>
+            </div>`).join('')}
+        </div>
+        <button class="btn btn-p" style="width:100%" onclick="retryDailyQuiz()">🔄 重新測驗（全部 ${totalWords} 題）</button>
+      </div>`;
+    return; // don't mark as done
+  }
+
+  // ── passed → mark complete and update data ────────────────────
   const dp = {...(u.daily_progress||{})};
-  if (!dp[today]) dp[today] = { total: dailyQuizWords.length, done: dailyQuizWords.length, doneIds: dailyQuizWords.map(w=>w.id), quizDone: false };
+  if (!dp[today]) dp[today] = { total: totalWords, done: totalWords, doneIds: SW.map(w=>w.id), quizDone: false };
   dp[today].quizDone = true;
   dp[today].done = dp[today].total;
+  dp[today].finalPct = pct;
+  dp[today].retries = dailyRetryCount;
+  dp[today].totalWords = totalWords;
+  dp[today].quizCorrect = dailyQC;
   u.daily_progress = dp;
 
-  // ── update SR level for all daily words at once (single write per word) ──
+  // update SR level for all daily words
   const sr = {...(u.sr||{})};
   const forgot = window._dailyForgot || new Set();
-  dailyQuizWords.forEach(w => {
+  SW.forEach(w => {
     const cur = sr[w.id] || { level: -1 };
-    // if marked forgot during study → reset to 0, else increment
     const remembered = !forgot.has(w.id);
     const newLevel = remembered ? Math.min((cur.level < 0 ? 0 : cur.level) + 1, SR_INTERVALS.length - 1) : 0;
     const days = SR_INTERVALS[newLevel];
@@ -555,11 +595,11 @@ async function finishDailyTask() {
   });
   u.sr = sr;
 
-  // complete course check for all studied words
+  // complete course check
   const known = {...(u.known||{})};
   const comp = [...(u.completed_courses||[])];
   let scoreBonus = 0;
-  dailyQuizWords.forEach(w => { known[w.id] = true; });
+  SW.forEach(w => { known[w.id] = true; });
   AC.forEach(c => {
     const ws = AW.filter(x=>x.cid===c.id);
     if (ws.length && ws.every(x=>known[x.id]) && !comp.includes(c.id)) {
@@ -569,43 +609,41 @@ async function finishDailyTask() {
   u.known = known; u.completed_courses = comp; u.score = (u.score||0) + scoreBonus;
   await updateOne('users', CU.name, { daily_progress: dp, known, completed_courses: comp, score: u.score, sr });
   document.getElementById('stu-score').textContent = u.score;
-  const total = dailyQuizWords.length;
-  const pct = Math.round(dailyQC/total*100);
-  const emoji = pct>=80?'🎉':pct>=50?'👍':'📖';
 
-  // wrong words section
-  const wrongList = wrongWords.map(wid => AW.find(w=>w.id===wid)).filter(Boolean);
-  const wrongHTML = wrongList.length ? `
-    <div style="text-align:left;margin:16px 0">
-      <div class="bold text-sm mb8" style="color:var(--danger)">❌ 答錯的單字（${wrongList.length} 個）</div>
-      ${wrongList.map(w=>`
-        <div style="display:flex;justify-content:space-between;padding:7px 10px;background:var(--dl);border-radius:6px;margin-bottom:5px;font-size:13px">
-          <span style="font-weight:600;color:var(--danger)">${w.en}</span>
-          <span style="color:var(--text)">${w.zh}</span>
-        </div>`).join('')}
-    </div>` : `<div class="text-muted mb12" style="font-size:13px">🎯 全部答對，太厲害了！</div>`;
-
-  // achievements check
+  const emoji = pct===100?'🎯':pct>=95?'🎉':'👍';
+  const retryNote = dailyRetryCount > 0 ? `<div class="text-muted" style="font-size:12px">（共重試 ${dailyRetryCount} 次）</div>` : '';
   const newBadges = checkAchievements(u);
 
   document.getElementById('t-study').innerHTML = `
     <div style="padding:24px 4px">
       <div style="text-align:center;margin-bottom:16px">
         <div style="font-size:52px;margin-bottom:8px">${emoji}</div>
-        <h2 style="margin-bottom:6px">${pct>=80?'太棒了！':pct>=50?'不錯喔！':'繼續加油！'}</h2>
-        <div class="text-muted" style="font-size:13px">今日任務完成！</div>
+        <h2 style="margin-bottom:4px">${pct===100?'完美！':pct>=95?'太棒了！':'通過了！'}</h2>
+        ${retryNote}
+        <div class="text-muted mt8" style="font-size:13px">今日任務完成 ✓</div>
       </div>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px">
-        <div class="stat-card"><div class="stat-label">題數</div><div class="stat-num">${total}</div></div>
-        <div class="stat-card"><div class="stat-label">正確率</div><div class="stat-num" style="color:${pct>=70?'var(--success)':'var(--warn)'}">${pct}%</div></div>
+        <div class="stat-card"><div class="stat-label">總題數</div><div class="stat-num">${totalWords}</div></div>
+        <div class="stat-card"><div class="stat-label">最終正確率</div><div class="stat-num" style="color:var(--success)">${pct}%</div></div>
         <div class="stat-card"><div class="stat-label">獲得積分</div><div class="stat-num" style="color:var(--brand)">+${dailyQS+scoreBonus}</div></div>
       </div>
-      ${wrongHTML}
       ${newBadges.length ? `<div style="background:var(--wl);border-radius:8px;padding:10px 12px;margin-bottom:12px"><div class="bold text-sm mb8" style="color:var(--warn)">🏅 獲得新成就！</div>${newBadges.map(b=>`<div style="font-size:13px;margin-bottom:4px">${b.icon} ${b.name} — ${b.desc}</div>`).join('')}</div>` : ''}
       <button class="btn btn-p" style="width:100%" onclick="stuTab('home', document.querySelector('#s-student .tab'))">回主頁</button>
     </div>`;
   dailyMode = false;
 }
+
+window.retryDailyQuiz = function() {
+  // reset quiz state, reshuffle ALL daily words
+  dailyQuizWords = shuffle([...SW]);
+  dailyQI = 0; dailyQS = 0; dailyQC = 0; wrongWords = [];
+  // clear resume answered state so retry goes through all words
+  const u = CU.data; const today = todayStr();
+  const dp = {...(u.daily_progress||{})};
+  if (dp[today]) { dp[today].answeredIds = []; dp[today].quizScore = 0; dp[today].quizCorrect = 0; u.daily_progress = dp; }
+  updateOne('users', CU.name, { daily_progress: dp });
+  startDailyQuizFromWords(dailyQuizWords, SW.length);
+};
 
 // ── quiz ─────────────────────────────────────────────────────
 function loadQC() {
@@ -1115,7 +1153,8 @@ const ACHIEVEMENTS = [
   { id:'words_50',    icon:'⭐', name:'初學者',     desc:'學習 50 個單字',               check: u => Object.keys(u.known||{}).length >= 50 },
   { id:'words_200',   icon:'🌟', name:'進階學習者', desc:'學習 200 個單字',              check: u => Object.keys(u.known||{}).length >= 200 },
   { id:'words_500',   icon:'💎', name:'單字達人',   desc:'學習 500 個單字',              check: u => Object.keys(u.known||{}).length >= 500 },
-  { id:'perfect_quiz',icon:'🎯', name:'完美測驗',   desc:'每日測驗全部答對',             check: u => { const dp=u.daily_progress||{}; return Object.values(dp).some(d=>d.quizDone&&d.quizCorrect&&d.totalWords&&d.quizCorrect>=d.totalWords); } },
+  { id:'perfect_quiz',icon:'🎯', name:'完美測驗',   desc:'每日測驗全部答對',             check: u => { const dp=u.daily_progress||{}; return Object.values(dp).some(d=>d.quizDone&&d.finalPct===100); } },
+  { id:'first_try',   icon:'🏹', name:'一次過關',   desc:'每日測驗一次通過（不重試）',   check: u => { const dp=u.daily_progress||{}; return Object.values(dp).some(d=>d.quizDone&&(d.retries||0)===0&&(d.finalPct||0)>=90); } },
   { id:'score_100',   icon:'💰', name:'百分達人',   desc:'累積 100 分',                  check: u => (u.score||0) >= 100 },
   { id:'score_500',   icon:'🤑', name:'積分高手',   desc:'累積 500 分',                  check: u => (u.score||0) >= 500 },
 ];
@@ -1225,8 +1264,9 @@ window.renderStudentList = async function renderStudentList() {
     if (!todayDp) {
       dailyTag = '<span class="tag" style="background:#f1f5f9;color:#64748b">未開始</span>';
     } else if (todayDp.quizDone) {
-      const pct = todayDp.totalWords ? Math.round((todayDp.quizCorrect||0)/todayDp.totalWords*100) : 0;
-      dailyTag = `<span class="tag tag-g">✓ 完成 ${pct}%</span>`;
+      const pct = todayDp.finalPct || (todayDp.totalWords ? Math.round((todayDp.quizCorrect||0)/todayDp.totalWords*100) : 0);
+      const retries = todayDp.retries || 0;
+      dailyTag = `<span class="tag tag-g">✓ ${pct}%${retries>0?' (重試'+retries+'次)':''}</span>`;
     } else if (todayDp.quizStarted) {
       const done = (todayDp.answeredIds||[]).length;
       const total = todayDp.totalWords||0;
@@ -1313,7 +1353,7 @@ function showStudentDetail(u) {
     const label = i===0 ? '今' : (d.getMonth()+1)+'/'+(d.getDate());
     let bg, color, icon;
     if (!dpDay || dpDay.total===0) { bg='#f1f5f9'; color='#94a3b8'; icon='—'; }
-    else if (dpDay.done >= dpDay.total) { bg='var(--sl)'; color='var(--success)'; icon='✓'; }
+    else if (dpDay.quizDone) { bg='var(--sl)'; color='var(--success)'; icon=(dpDay.finalPct||'✓')+(dpDay.finalPct?'%':''); }
     else { bg='var(--wl)'; color='var(--warn)'; icon=dpDay.done+'/'+dpDay.total; }
     histHTML += `<div style="background:${bg};color:${color};border-radius:6px;padding:5px 7px;text-align:center;font-size:11px;font-weight:500;min-width:36px">
       <div>${label}</div><div style="margin-top:1px">${icon}</div></div>`;
