@@ -41,12 +41,13 @@ async function delOne(col, id) {
 }
 
 // ── state ────────────────────────────────────────────────────
-let CU = null, AW = [], AC = [];
+let CU = null, AW = [], AC = [], APP_SETTINGS = { dailyLimit: 20 };
 let SW = [], SI = 0, QW = [], QI = 0, QS = 0, QC = 0;
 let dailyMode = false;
-let dailyWordIds = new Set(); // IDs of today's daily words, fixed at task start
-let dailyPhase = 'study'; // 'study' | 'quiz'
+let dailyWordIds = new Set();
+let dailyPhase = 'study';
 let dailyQuizWords = [], dailyQI = 0, dailyQS = 0, dailyQC = 0;
+let wrongWords = []; // track wrong answers in daily quiz
 const UNSPLASH_KEY = 'YpPAMHEVCgNql4bLuSCKDpwAoGJWSAOi_6_IpTDY5IY';
 
 // ── image cache ───────────────────────────────────────────────
@@ -76,8 +77,9 @@ function getDailyWords() {
       else if (!known[w.id]) { newW.push(w); }
     });
   });
+  const limit = APP_SETTINGS.dailyLimit || 20;
   const pool = [...due];
-  for (let i = 0; i < newW.length && pool.length < 20; i++) pool.push(newW[i]);
+  for (let i = 0; i < newW.length && pool.length < limit; i++) pool.push(newW[i]);
   return pool;
 }
 async function markSR(wordId, remembered) {
@@ -150,9 +152,10 @@ function showScreen(id) {
 window.stuTab = function(t, el) {
   document.querySelectorAll('#s-student .tab').forEach(x => x.classList.remove('active'));
   el.classList.add('active');
-  ['home','study','quiz','rank'].forEach(n => document.getElementById('t-'+n).style.display = n===t?'block':'none');
+  ['home','study','quiz','rank','badges'].forEach(n => document.getElementById('t-'+n).style.display = n===t?'block':'none');
   if (t==='rank') renderRank();
   if (t==='home') { dailyMode=false; refreshHome(); }
+  if (t==='badges') renderBadges();
   if (t==='study') {
     const fb = document.getElementById('forgot-btn');
     if (fb) fb.style.display = dailyMode ? 'inline-flex' : 'none';
@@ -208,36 +211,67 @@ window.startDaily = function() {
   const today = todayStr();
   const u = CU.data;
   const dp = u.daily_progress||{};
-  // if already fully completed today, show message
   if (dp[today] && dp[today].quizDone) { alert('🎉 今日任務已全部完成！明天再來。'); return; }
+
   dailyMode = true;
-  dailyPhase = 'study';
-  window._dailyForgot = new Set(); // reset forgot tracking
   SW = getDailyWords();
   if (!SW.length) { alert('🎉 今日任務已完成！明天再來。'); return; }
-  // lock in today's word IDs (prevents re-counting on repeat)
   dailyWordIds = new Set(SW.map(w => w.id));
-  // init daily progress record if not yet
+
+  // ── resume logic ──────────────────────────────────────────
+  const todayDp = dp[today];
+  if (todayDp && todayDp.quizStarted && !todayDp.quizDone) {
+    // resume quiz phase
+    dailyPhase = 'quiz';
+    window._dailyForgot = new Set(todayDp.forgotIds||[]);
+    // restore quiz words in original order, skip already answered
+    const answered = new Set(todayDp.answeredIds||[]);
+    dailyQuizWords = SW.filter(w => !answered.has(w.id));
+    // prepend already-answered count for display offset
+    dailyQI = 0; dailyQS = todayDp.quizScore||0; dailyQC = todayDp.quizCorrect||0;
+    wrongWords = todayDp.wrongWords||[];
+    _enterStudyTabWithQuiz();
+    startDailyQuizFromWords(dailyQuizWords, todayDp.totalWords||SW.length);
+    return;
+  }
+  if (todayDp && todayDp.studyDone && !todayDp.quizStarted) {
+    // study done, quiz not started yet — go straight to quiz
+    dailyPhase = 'quiz';
+    window._dailyForgot = new Set(todayDp.forgotIds||[]);
+    dailyQI = 0; dailyQS = 0; dailyQC = 0; wrongWords = [];
+    _enterStudyTabWithQuiz();
+    startDailyQuizFromWords(SW, SW.length);
+    return;
+  }
+
+  // fresh start
+  dailyPhase = 'study';
+  window._dailyForgot = new Set();
+  wrongWords = [];
   if (!dp[today]) {
-    dp[today] = { total: SW.length, done: 0, doneIds: [], quizDone: false };
+    dp[today] = { total: SW.length, done: 0, doneIds: [], quizDone: false, studyDone: false, quizStarted: false };
     u.daily_progress = dp;
     updateOne('users', CU.name, { daily_progress: dp });
   }
   SI = 0;
   showSC();
+  _enterStudyTabWithQuiz();
+};
+
+function _enterStudyTabWithQuiz() {
   document.getElementById('t-study').style.display='block';
   document.getElementById('t-home').style.display='none';
   const fb = document.getElementById('forgot-btn');
-  if(fb) fb.style.display='inline-flex';
+  if(fb) fb.style.display = dailyPhase==='study' ? 'inline-flex' : 'none';
   document.querySelectorAll('#s-student .tab').forEach(x=>x.classList.remove('active'));
   document.querySelectorAll('#s-student .tab')[1].classList.add('active');
-};
+}
 async function showSC() {
   const w = SW[SI];
   if (!w) { document.getElementById('study-en').textContent='（此課程無單字）'; return; }
   document.getElementById('flip-card').classList.remove('flipped');
   document.getElementById('study-en').textContent = w.en;
-  document.getElementById('study-pos').textContent = w.pos||'';
+  document.getElementById('study-pos').textContent = (w.phonetic ? '['+w.phonetic+'] ' : '') + (w.pos||'');
   document.getElementById('study-zh').textContent = w.zh;
   document.getElementById('study-ex').textContent = w.ex||'';
   document.getElementById('study-progress').textContent = (SI+1)+'/'+SW.length;
@@ -252,7 +286,11 @@ window.flipCard = function() { document.getElementById('flip-card').classList.to
 window.studyNav = function(d) {
   const next = SI + d;
   if (dailyMode && dailyPhase==='study' && next >= SW.length) {
-    // all words reviewed — start daily quiz phase
+    // mark study phase done for resume
+    const u = CU.data; const today = todayStr();
+    const dp = {...(u.daily_progress||{})};
+    if (dp[today]) { dp[today].studyDone = true; dp[today].forgotIds = [...(window._dailyForgot||new Set())]; u.daily_progress = dp; }
+    updateOne('users', CU.name, { daily_progress: dp });
     startDailyQuiz();
     return;
   }
@@ -277,19 +315,32 @@ window.markKnown = async function() {
 };
 window.markForgot = async function() {
   const w = SW[SI]; if (!w) return;
-  // track "forgot" words during study phase for SR adjustment after quiz
   if (dailyMode) {
     if (!window._dailyForgot) window._dailyForgot = new Set();
     window._dailyForgot.add(w.id);
+    // persist forgotIds for resume
+    const u = CU.data; const today = todayStr();
+    const dp = {...(u.daily_progress||{})};
+    if (dp[today]) { dp[today].forgotIds = [...window._dailyForgot]; u.daily_progress = dp; }
+    updateOne('users', CU.name, { daily_progress: dp });
   }
   window.studyNav(1);
 };
 
 function startDailyQuiz() {
   dailyPhase = 'quiz';
-  // shuffle words, each word appears once (mixed mc/fill)
   dailyQuizWords = shuffle([...SW]);
-  dailyQI = 0; dailyQS = 0; dailyQC = 0;
+  dailyQI = 0; dailyQS = 0; dailyQC = 0; wrongWords = [];
+  // mark quizStarted for resume
+  const u = CU.data; const today = todayStr();
+  const dp = {...(u.daily_progress||{})};
+  if (dp[today]) { dp[today].quizStarted = true; dp[today].totalWords = SW.length; u.daily_progress = dp; }
+  updateOne('users', CU.name, { daily_progress: dp });
+  startDailyQuizFromWords(dailyQuizWords, SW.length);
+}
+
+function startDailyQuizFromWords(words, totalCount) {
+  dailyPhase = 'quiz';
   // show daily quiz overlay inside study tab
   const studyTab = document.getElementById('t-study');
   studyTab.innerHTML = `
@@ -298,7 +349,7 @@ function startDailyQuiz() {
         <div class="bold text-sm">📝 每日測驗</div>
         <div class="text-muted" style="font-size:12px">完成測驗才算今日任務完成</div>
       </div>
-      <span class="tag tag-b" id="dq-progress">1 / ${dailyQuizWords.length}</span>
+      <span class="tag tag-b" id="dq-progress">1 / ${totalCount}</span>
     </div>
     <div class="card mb12" id="dq-question-card">
       <div class="text-muted text-sm mb8" id="dq-label"></div>
@@ -386,17 +437,28 @@ function answerDailyMC(btn, correct, wid) {
 
 async function recordDailyAnswer(wid, correct) {
   const u = CU.data;
-  // update quiz_stats
   const qs = {...(u.quiz_stats||{})};
   if (!qs[wid]) qs[wid] = { attempts:0, correct:0 };
   qs[wid].attempts++; if(correct) qs[wid].correct++;
   u.quiz_stats = qs;
-  // update score
+  if (!correct && !wrongWords.includes(wid)) wrongWords.push(wid);
   if (correct) {
     u.score = (u.score||0) + 10;
     document.getElementById('stu-score').textContent = u.score;
   }
-  await updateOne('users', CU.name, { quiz_stats: qs, score: u.score });
+  // save resume state
+  const today = todayStr();
+  const dp = {...(u.daily_progress||{})};
+  if (dp[today]) {
+    const answered = dp[today].answeredIds || [];
+    if (!answered.includes(wid)) answered.push(wid);
+    dp[today].answeredIds = answered;
+    dp[today].quizScore = (dp[today].quizScore||0) + (correct?10:0);
+    dp[today].quizCorrect = (dp[today].quizCorrect||0) + (correct?1:0);
+    dp[today].wrongWords = wrongWords;
+    u.daily_progress = dp;
+  }
+  await updateOne('users', CU.name, { quiz_stats: qs, score: u.score, daily_progress: dp });
 }
 
 window.dailyQuizNext = function() {
@@ -445,19 +507,40 @@ async function finishDailyTask() {
   u.known = known; u.completed_courses = comp; u.score = (u.score||0) + scoreBonus;
   await updateOne('users', CU.name, { daily_progress: dp, known, completed_courses: comp, score: u.score, sr });
   document.getElementById('stu-score').textContent = u.score;
-  const pct = Math.round(dailyQC/dailyQuizWords.length*100);
+  const total = dailyQuizWords.length;
+  const pct = Math.round(dailyQC/total*100);
   const emoji = pct>=80?'🎉':pct>=50?'👍':'📖';
+
+  // wrong words section
+  const wrongList = wrongWords.map(wid => AW.find(w=>w.id===wid)).filter(Boolean);
+  const wrongHTML = wrongList.length ? `
+    <div style="text-align:left;margin:16px 0">
+      <div class="bold text-sm mb8" style="color:var(--danger)">❌ 答錯的單字（${wrongList.length} 個）</div>
+      ${wrongList.map(w=>`
+        <div style="display:flex;justify-content:space-between;padding:7px 10px;background:var(--dl);border-radius:6px;margin-bottom:5px;font-size:13px">
+          <span style="font-weight:600;color:var(--danger)">${w.en}</span>
+          <span style="color:var(--text)">${w.zh}</span>
+        </div>`).join('')}
+    </div>` : `<div class="text-muted mb12" style="font-size:13px">🎯 全部答對，太厲害了！</div>`;
+
+  // achievements check
+  const newBadges = checkAchievements(u);
+
   document.getElementById('t-study').innerHTML = `
-    <div style="text-align:center;padding:32px 16px">
-      <div style="font-size:56px;margin-bottom:12px">${emoji}</div>
-      <h2 style="margin-bottom:8px">${pct>=80?'太棒了！':pct>=50?'不錯喔！':'繼續加油！'}</h2>
-      <div class="text-muted mb12">今日任務完成！背誦 ${dailyQuizWords.length} 個單字・測驗正確率 ${pct}%</div>
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;max-width:280px;margin:0 auto 20px">
-        <div class="stat-card"><div class="stat-label">測驗題數</div><div class="stat-num">${dailyQuizWords.length}</div></div>
-        <div class="stat-card"><div class="stat-label">答對</div><div class="stat-num" style="color:var(--success)">${dailyQC}</div></div>
-        <div class="stat-card"><div class="stat-label">獲得積分</div><div class="stat-num" style="color:var(--brand)">+${dailyQS+(scoreBonus)}</div></div>
+    <div style="padding:24px 4px">
+      <div style="text-align:center;margin-bottom:16px">
+        <div style="font-size:52px;margin-bottom:8px">${emoji}</div>
+        <h2 style="margin-bottom:6px">${pct>=80?'太棒了！':pct>=50?'不錯喔！':'繼續加油！'}</h2>
+        <div class="text-muted" style="font-size:13px">今日任務完成！</div>
       </div>
-      <button class="btn btn-p" onclick="stuTab('home', document.querySelector('#s-student .tab'))">回主頁</button>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px">
+        <div class="stat-card"><div class="stat-label">題數</div><div class="stat-num">${total}</div></div>
+        <div class="stat-card"><div class="stat-label">正確率</div><div class="stat-num" style="color:${pct>=70?'var(--success)':'var(--warn)'}">${pct}%</div></div>
+        <div class="stat-card"><div class="stat-label">獲得積分</div><div class="stat-num" style="color:var(--brand)">+${dailyQS+scoreBonus}</div></div>
+      </div>
+      ${wrongHTML}
+      ${newBadges.length ? `<div style="background:var(--wl);border-radius:8px;padding:10px 12px;margin-bottom:12px"><div class="bold text-sm mb8" style="color:var(--warn)">🏅 獲得新成就！</div>${newBadges.map(b=>`<div style="font-size:13px;margin-bottom:4px">${b.icon} ${b.name} — ${b.desc}</div>`).join('')}</div>` : ''}
+      <button class="btn btn-p" style="width:100%" onclick="stuTab('home', document.querySelector('#s-student .tab'))">回主頁</button>
     </div>`;
   dailyMode = false;
 }
@@ -605,6 +688,27 @@ window.resetQuiz = function() {
 };
 
 // ── rank ─────────────────────────────────────────────────────
+
+function renderBadges() {
+  const list = document.getElementById('badges-list');
+  const u = CU.data;
+  const all = getEarnedAchievements(u);
+  const earned = all.filter(a=>a.done).length;
+  list.innerHTML = `<div class="bold text-sm mb12">${earned} / ${all.length} 個成就已解鎖</div>
+    <div class="progress-bar mb12"><div class="progress-fill" style="width:${Math.round(earned/all.length*100)}%"></div></div>`;
+  all.forEach(a => {
+    const row = document.createElement('div');
+    row.style.cssText = `display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border);opacity:${a.done?1:0.4}`;
+    row.innerHTML = `
+      <div style="font-size:28px;width:36px;text-align:center">${a.icon}</div>
+      <div style="flex:1">
+        <div class="bold text-sm">${a.name} ${a.done?'<span style="color:var(--success)">✓</span>':''}</div>
+        <div class="text-muted" style="font-size:12px">${a.desc}</div>
+      </div>`;
+    list.appendChild(row);
+  });
+}
+
 async function renderRank() {
   const list=document.getElementById('rank-list'); list.innerHTML='<div class="loading">載入中...</div>';
   const all=(await getAll('users')).filter(u=>u.role!=='admin'); all.sort((a,b)=>b.score-a.score);
@@ -623,11 +727,12 @@ async function renderRank() {
 window.adminTab = function(t, el) {
   document.querySelectorAll('#s-admin .tab').forEach(x=>x.classList.remove('active'));
   el.classList.add('active');
-  ['words','import','courses','students'].forEach(n=>document.getElementById('at-'+n).style.display=n===t?'block':'none');
+  ['words','import','courses','students','settings'].forEach(n=>document.getElementById('at-'+n).style.display=n===t?'block':'none');
   if(t==='words'){renderWords();updateFC();}
   if(t==='courses') renderAdminCourses();
   if(t==='import') updateIC();
   if(t==='students') renderStudentList();
+  if(t==='settings') loadSettings();
 };
 function updateFC() {
   const sel=document.getElementById('filter-course'); if(!sel)return;
@@ -841,6 +946,23 @@ async function renderAdminCourses() {
     list.appendChild(row);
   });
 }
+
+window.loadSettings = async function() {
+  const s = await getOne('settings', 'app');
+  if (s) {
+    const sel = document.getElementById('setting-daily-limit');
+    if (sel) sel.value = s.dailyLimit || 20;
+  }
+};
+window.saveSettings = async function() {
+  const limit = parseInt(document.getElementById('setting-daily-limit').value);
+  await setOne('settings', 'app', { dailyLimit: limit });
+  APP_SETTINGS.dailyLimit = limit;
+  const msg = document.getElementById('settings-msg');
+  msg.style.color = 'var(--success)'; msg.textContent = '✓ 設定已儲存！';
+  setTimeout(()=>msg.textContent='', 2000);
+};
+
 window.deleteCourse = async function(id) {
   if(!confirm('刪除課程將同時刪除所有相關單字，確定繼續？'))return;
   const ws=AW.filter(w=>w.cid===id);
@@ -848,6 +970,54 @@ window.deleteCourse = async function(id) {
   AC=AC.filter(c=>c.id!==id); AW=AW.filter(w=>w.cid!==id);
   renderAdminCourses(); updateFC(); updateIC(); window.renderWords();
 };
+
+
+// ── achievements ──────────────────────────────────────────────
+const ACHIEVEMENTS = [
+  { id:'first_day',   icon:'🌱', name:'第一步',     desc:'完成第一次每日任務',          check: u => Object.values(u.daily_progress||{}).filter(d=>d.quizDone).length >= 1 },
+  { id:'three_days',  icon:'🔥', name:'三天連續',   desc:'連續 3 天完成每日任務',        check: u => checkStreak(u, 3) },
+  { id:'seven_days',  icon:'💪', name:'一週達人',   desc:'連續 7 天完成每日任務',        check: u => checkStreak(u, 7) },
+  { id:'thirty_days', icon:'🏆', name:'月度冠軍',   desc:'連續 30 天完成每日任務',       check: u => checkStreak(u, 30) },
+  { id:'first_course',icon:'📚', name:'課程達成',   desc:'完成第一個課程所有單字',       check: u => (u.completed_courses||[]).length >= 1 },
+  { id:'all_courses', icon:'🎓', name:'全科達人',   desc:'完成所有課程',                 check: u => AC.length > 0 && (u.completed_courses||[]).length >= AC.length },
+  { id:'words_50',    icon:'⭐', name:'初學者',     desc:'學習 50 個單字',               check: u => Object.keys(u.known||{}).length >= 50 },
+  { id:'words_200',   icon:'🌟', name:'進階學習者', desc:'學習 200 個單字',              check: u => Object.keys(u.known||{}).length >= 200 },
+  { id:'words_500',   icon:'💎', name:'單字達人',   desc:'學習 500 個單字',              check: u => Object.keys(u.known||{}).length >= 500 },
+  { id:'perfect_quiz',icon:'🎯', name:'完美測驗',   desc:'每日測驗全部答對',             check: u => { const dp=u.daily_progress||{}; return Object.values(dp).some(d=>d.quizDone&&d.quizCorrect&&d.totalWords&&d.quizCorrect>=d.totalWords); } },
+  { id:'score_100',   icon:'💰', name:'百分達人',   desc:'累積 100 分',                  check: u => (u.score||0) >= 100 },
+  { id:'score_500',   icon:'🤑', name:'積分高手',   desc:'累積 500 分',                  check: u => (u.score||0) >= 500 },
+];
+
+function checkStreak(u, days) {
+  const dp = u.daily_progress||{};
+  let streak = 0;
+  for (let i=0; i<days; i++) {
+    const d = new Date(); d.setDate(d.getDate()-i);
+    const ds = d.toISOString().slice(0,10);
+    if (dp[ds]?.quizDone) streak++; else break;
+  }
+  return streak >= days;
+}
+
+function checkAchievements(u) {
+  const earned = new Set(u.achievements||[]);
+  const newBadges = [];
+  ACHIEVEMENTS.forEach(a => {
+    if (!earned.has(a.id) && a.check(u)) {
+      earned.add(a.id); newBadges.push(a);
+    }
+  });
+  if (newBadges.length) {
+    u.achievements = [...earned];
+    updateOne('users', CU.name, { achievements: u.achievements });
+  }
+  return newBadges;
+}
+
+function getEarnedAchievements(u) {
+  const earned = new Set(u.achievements||[]);
+  return ACHIEVEMENTS.map(a => ({ ...a, done: earned.has(a.id) || a.check(u) }));
+}
 
 // ── student progress ──────────────────────────────────────────
 window.renderStudentList = async function renderStudentList() {
@@ -1119,6 +1289,7 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
     <div class="tab" onclick="stuTab('study',this)">背誦</div>
     <div class="tab" onclick="stuTab('quiz',this)">考核</div>
     <div class="tab" onclick="stuTab('rank',this)">排名</div>
+    <div class="tab" onclick="stuTab('badges',this)">成就</div>
   </div>
   <div id="t-home">
     <div class="grid3 mb12">
@@ -1217,6 +1388,9 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
     </div>
     <div class="card" id="rank-list"><div class="loading">載入中...</div></div>
   </div>
+  <div id="t-badges" style="display:none">
+    <div class="card" id="badges-list"></div>
+  </div>
 </div>
 
 <div id="s-admin" class="screen">
@@ -1232,6 +1406,7 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
     <div class="tab" onclick="adminTab('import',this)">匯入單字</div>
     <div class="tab" onclick="adminTab('courses',this)">課程管理</div>
     <div class="tab" onclick="adminTab('students',this)">學生進度</div>
+    <div class="tab" onclick="adminTab('settings',this)">設定</div>
   </div>
   <div id="at-words">
     <div class="flex gap8 mb12">
@@ -1270,6 +1445,23 @@ happy, 快樂的, adj."></textarea>
     <button class="btn btn-p mt12" style="width:100%" onclick="toggleBox('nc2')">+ 新增課程</button>
     <div id="nc2" style="display:none;margin-top:12px">
       <div class="flex gap8"><input id="nc2-name" class="mb0" placeholder="課程名稱" style="flex:1"/><button class="btn btn-sm btn-p" onclick="addCourse('nc2-name')">新增</button></div>
+    </div>
+  </div>
+
+  <div id="at-settings" style="display:none">
+    <h3 class="mb12">每日任務設定</h3>
+    <div class="card mb12">
+      <label>每日單字數量上限</label>
+      <select id="setting-daily-limit" class="mb8">
+        <option value="10">10 個</option>
+        <option value="15">15 個</option>
+        <option value="20" selected>20 個</option>
+        <option value="25">25 個</option>
+        <option value="30">30 個</option>
+      </select>
+      <div class="text-muted mb12" style="font-size:12px">複習單字優先，剩餘名額給新單字，合計不超過此數量</div>
+      <button class="btn btn-p" style="width:100%" onclick="saveSettings()">儲存設定</button>
+      <div id="settings-msg" style="margin-top:8px;font-size:13px"></div>
     </div>
   </div>
 
