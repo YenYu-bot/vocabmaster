@@ -66,21 +66,47 @@ async function fetchWordImage(word) {
 // ── spaced repetition ─────────────────────────────────────────
 const SR_INTERVALS = [1, 2, 4, 7, 15];
 function todayStr() { return new Date().toISOString().slice(0,10); }
+
+// compute which new words should be assigned on a given date
+// returns array of word IDs in course order
+function computeNewWordsForDate(dateStr) {
+  const settings = APP_SETTINGS;
+  const startDate = settings.startDate || dateStr;
+  const perDay = settings.newWordsPerDay || 20;
+  // days since start (0-based)
+  const msPerDay = 86400000;
+  const dayIdx = Math.max(0, Math.floor((new Date(dateStr) - new Date(startDate)) / msPerDay));
+  const offset = dayIdx * perDay;
+  // all words in course order
+  const ordered = [];
+  AC.forEach(c => AW.filter(w => w.cid===c.id).forEach(w => ordered.push(w.id)));
+  return ordered.slice(offset, offset + perDay);
+}
+
+// get today's new word IDs (from manual plan if set, else auto)
+function getTodayNewWordIds() {
+  const plan = APP_SETTINGS.todayPlan;
+  if (plan && plan.wordIds && plan.wordIds.length) return plan.wordIds;
+  return computeNewWordsForDate(todayStr());
+}
+
 function getDailyWords() {
   const u = CU.data; const today = todayStr();
-  const sr = u.sr || {}; const known = u.known || {};
-  const due = [], newW = [];
-  // iterate in course order (AC is already sorted by sortOrder)
+  const sr = u.sr || {};
+  // 1. today's new words (system-assigned, same for all students)
+  const newIds = getTodayNewWordIds();
+  const newWords = newIds.map(id => AW.find(w=>w.id===id)).filter(Boolean);
+  // 2. personal review words (due today by SR)
+  const reviewWords = [];
   AC.forEach(c => {
-    AW.filter(w => w.cid === c.id).forEach(w => {
-      if (sr[w.id]) { if (sr[w.id].nextDate <= today) due.push(w); }
-      else if (!known[w.id]) { newW.push(w); }
+    AW.filter(w => w.cid===c.id).forEach(w => {
+      if (sr[w.id] && sr[w.id].nextDate <= today && !newIds.includes(w.id)) {
+        reviewWords.push(w);
+      }
     });
   });
-  const limit = APP_SETTINGS.dailyLimit || 20;
-  const pool = [...due];
-  for (let i = 0; i < newW.length && pool.length < limit; i++) pool.push(newW[i]);
-  return pool;
+  // combine: new words first, then reviews
+  return [...newWords, ...reviewWords];
 }
 async function markSR(wordId, remembered) {
   const u = CU.data; const sr = {...(u.sr||{})};
@@ -172,12 +198,27 @@ async function refreshHome() {
   const ri = all.findIndex(x => x.id === CU.name);
   document.getElementById('h-rank').textContent = '#' + (ri+1);
   // daily task
-  const daily = getDailyWords();
-  const sr = u.sr || {};
-  const reviewCount = daily.filter(w => sr[w.id]).length;
-  const newCount = daily.length - reviewCount;
-  document.getElementById('daily-count').textContent = daily.length > 0 ? daily.length + ' 個單字' : '今日已完成 🎉';
-  document.getElementById('daily-desc').textContent = daily.length > 0 ? '新單字 '+newCount+' 個・複習 '+reviewCount+' 個' : '明天繼續加油！';
+  const today2 = todayStr();
+  const dp2 = u.daily_progress||{};
+  const todayDp2 = dp2[today2];
+  if (todayDp2?.quizDone) {
+    document.getElementById('daily-count').textContent = '今日已完成 🎉';
+    document.getElementById('daily-desc').textContent = '明天繼續加油！';
+  } else {
+    const daily = getDailyWords();
+    const sr2 = u.sr || {};
+    const reviewCount = daily.filter(w => sr2[w.id]).length;
+    const newCount = daily.length - reviewCount;
+    const doneCount = todayDp2?.doneIds?.length || 0;
+    document.getElementById('daily-count').textContent = daily.length > 0 ? daily.length + ' 個單字' : '今日已完成 🎉';
+    if (todayDp2?.studyDone) {
+      document.getElementById('daily-desc').textContent = '背誦完成，測驗待完成';
+    } else if (doneCount > 0) {
+      document.getElementById('daily-desc').textContent = `繼續上次進度（已背 ${doneCount}/${daily.length}）`;
+    } else {
+      document.getElementById('daily-desc').textContent = '新單字 '+newCount+' 個・複習 '+reviewCount+' 個';
+    }
+  }
   renderCL();
 }
 
@@ -950,17 +991,87 @@ async function renderAdminCourses() {
 window.loadSettings = async function() {
   const s = await getOne('settings', 'app');
   if (s) {
-    const sel = document.getElementById('setting-daily-limit');
-    if (sel) sel.value = s.dailyLimit || 20;
+    const sel = document.getElementById('setting-new-per-day');
+    if (sel) sel.value = s.newWordsPerDay || 20;
+    const sd = document.getElementById('setting-start-date');
+    if (sd) sd.value = s.startDate || todayStr();
+  } else {
+    const sd = document.getElementById('setting-start-date');
+    if (sd) sd.value = todayStr();
   }
+  renderTodayPlanPreview();
+  renderManualWordPicker();
 };
+
 window.saveSettings = async function() {
-  const limit = parseInt(document.getElementById('setting-daily-limit').value);
-  await setOne('settings', 'app', { dailyLimit: limit });
-  APP_SETTINGS.dailyLimit = limit;
+  const perDay = parseInt(document.getElementById('setting-new-per-day').value);
+  const startDate = document.getElementById('setting-start-date').value || todayStr();
+  await setOne('settings', 'app', { newWordsPerDay: perDay, startDate, dailyLimit: perDay });
+  APP_SETTINGS.newWordsPerDay = perDay;
+  APP_SETTINGS.dailyLimit = perDay;
+  APP_SETTINGS.startDate = startDate;
   const msg = document.getElementById('settings-msg');
-  msg.style.color = 'var(--success)'; msg.textContent = '✓ 設定已儲存！';
-  setTimeout(()=>msg.textContent='', 2000);
+  msg.style.color='var(--success)'; msg.textContent='✓ 設定已儲存！';
+  setTimeout(()=>{msg.textContent=''; renderTodayPlanPreview();}, 1500);
+};
+
+function renderTodayPlanPreview() {
+  const el = document.getElementById('today-plan-preview'); if(!el) return;
+  const today = todayStr();
+  const plan = APP_SETTINGS.todayPlan;
+  const ids = plan?.wordIds?.length ? plan.wordIds : computeNewWordsForDate(today);
+  const words = ids.map(id=>AW.find(w=>w.id===id)).filter(Boolean);
+  const isManual = !!(plan?.wordIds?.length);
+  el.innerHTML = `
+    <div class="flex gap8 mb8"><span class="bold text-sm">今日（${today}）新單字</span>
+    <span class="tag ${isManual?'tag-a':'tag-b'}">${isManual?'手動指定':'系統自動'}</span>
+    <span class="text-muted" style="font-size:12px;margin-left:auto">${words.length} 個</span></div>
+    <div style="display:flex;flex-wrap:wrap;gap:4px">
+      ${words.map(w=>`<span style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px 8px;font-size:12px">${w.en}</span>`).join('')}
+    </div>`;
+}
+
+function renderManualWordPicker() {
+  const el = document.getElementById('manual-word-picker'); if(!el) return;
+  const plan = APP_SETTINGS.todayPlan;
+  const selected = new Set(plan?.wordIds||[]);
+  el.innerHTML = '';
+  AC.forEach(c => {
+    const ws = AW.filter(w=>w.cid===c.id);
+    if (!ws.length) return;
+    const header = document.createElement('div');
+    header.style.cssText='font-size:12px;font-weight:600;color:var(--muted);padding:4px 0 2px';
+    header.textContent = c.name;
+    el.appendChild(header);
+    ws.forEach(w => {
+      const row = document.createElement('label');
+      row.style.cssText='display:flex;align-items:center;gap:6px;padding:3px 0;font-size:13px;cursor:pointer';
+      row.innerHTML=`<input type="checkbox" data-wid="${w.id}" ${selected.has(w.id)?'checked':''} style="accent-color:var(--brand)"/> ${w.en} <span style="color:var(--muted);font-size:11px">${w.zh}</span>`;
+      el.appendChild(row);
+    });
+  });
+}
+
+window.saveTodayPlan = async function() {
+  const checked = [...document.querySelectorAll('#manual-word-picker input[type=checkbox]:checked')];
+  const ids = checked.map(c=>c.dataset.wid);
+  if (!ids.length) { alert('請至少勾選一個單字'); return; }
+  const today = todayStr();
+  await setOne('daily_plan', today, { wordIds: ids, date: today, setBy: CU.name, setAt: Date.now() });
+  APP_SETTINGS.todayPlan = { wordIds: ids };
+  const msg = document.getElementById('plan-msg');
+  msg.style.color='var(--success)'; msg.textContent='✓ 今日任務已指定！';
+  setTimeout(()=>{msg.textContent=''; renderTodayPlanPreview();}, 1500);
+};
+
+window.clearTodayPlan = async function() {
+  if (!confirm('確定清除手動指定，恢復系統自動排程？')) return;
+  const today = todayStr();
+  await delOne('daily_plan', today);
+  APP_SETTINGS.todayPlan = null;
+  const msg = document.getElementById('plan-msg');
+  msg.style.color='var(--success)'; msg.textContent='✓ 已恢復自動排程';
+  setTimeout(()=>{msg.textContent=''; renderTodayPlanPreview();}, 1500);
 };
 
 window.deleteCourse = async function(id) {
@@ -1029,22 +1140,60 @@ window.renderStudentList = async function renderStudentList() {
   list.innerHTML = '';
   if (!all.length) { list.innerHTML = '<p class="text-muted text-sm" style="padding:8px">尚無學生資料</p>'; return; }
 
+  // today's plan info
+  const planIds = APP_SETTINGS.todayPlan?.wordIds?.length
+    ? APP_SETTINGS.todayPlan.wordIds
+    : computeNewWordsForDate(today);
+  const planWords = planIds.map(id=>AW.find(w=>w.id===id)).filter(Boolean);
+  const isManualPlan = !!(APP_SETTINGS.todayPlan?.wordIds?.length);
+
   // summary stats bar
   const totalStu = all.length;
   const doneTodayStu = all.filter(u => {
     const dp = u.daily_progress||{};
-    return dp[today] && dp[today].done >= dp[today].total && dp[today].total > 0;
+    return dp[today]?.quizDone;
   }).length;
+  const studyDoneStu = all.filter(u => {
+    const dp = u.daily_progress||{};
+    return dp[today]?.studyDone && !dp[today]?.quizDone;
+  }).length;
+
   const summaryEl = document.createElement('div');
   summaryEl.className = 'card mb12';
   summaryEl.style.cssText = 'background:linear-gradient(135deg,#2563eb,#1e40af);color:#fff;border:none';
   summaryEl.innerHTML = `
-    <div style="font-size:13px;opacity:0.85;margin-bottom:6px">📊 今日完成每日任務</div>
-    <div style="font-size:28px;font-weight:700">${doneTodayStu} <span style="font-size:16px;opacity:0.8">/ ${totalStu} 位學生</span></div>
-    <div style="height:6px;background:rgba(255,255,255,0.2);border-radius:99px;margin-top:10px;overflow:hidden">
-      <div style="height:100%;background:#fff;border-radius:99px;width:${totalStu?Math.round(doneTodayStu/totalStu*100):0}%;transition:width 0.4s"></div>
+    <div style="font-size:13px;opacity:0.85;margin-bottom:8px">📊 今日（${today}）任務概況</div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px">
+      <div style="text-align:center">
+        <div style="font-size:22px;font-weight:700">${planWords.length}</div>
+        <div style="font-size:11px;opacity:0.8">今日新單字</div>
+      </div>
+      <div style="text-align:center">
+        <div style="font-size:22px;font-weight:700">${doneTodayStu}</div>
+        <div style="font-size:11px;opacity:0.8">全部完成</div>
+      </div>
+      <div style="text-align:center">
+        <div style="font-size:22px;font-weight:700">${studyDoneStu}</div>
+        <div style="font-size:11px;opacity:0.8">背誦完成</div>
+      </div>
+    </div>
+    <div style="height:5px;background:rgba(255,255,255,0.2);border-radius:99px;overflow:hidden">
+      <div style="height:100%;background:#fff;border-radius:99px;width:${totalStu?Math.round(doneTodayStu/totalStu*100):0}%"></div>
     </div>`;
   list.appendChild(summaryEl);
+
+  // today's new words list
+  const planEl = document.createElement('div');
+  planEl.className = 'card mb12';
+  planEl.innerHTML = `
+    <div class="flex gap8 mb8">
+      <span class="bold text-sm">今日新單字（${planWords.length} 個）</span>
+      <span class="tag ${isManualPlan?'tag-a':'tag-b'}">${isManualPlan?'手動指定':'系統自動'}</span>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:4px">
+      ${planWords.map(w=>`<span style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px 8px;font-size:12px">${w.en}</span>`).join('')}
+    </div>`;
+  list.appendChild(planEl);
 
   all.forEach((u, i) => {
     const known = Object.keys(u.known||{}).length;
@@ -1052,13 +1201,21 @@ window.renderStudentList = async function renderStudentList() {
     const dp = u.daily_progress||{};
     const todayDp = dp[today];
     let dailyTag = '';
-    if (!todayDp || todayDp.total === 0) {
-      dailyTag = '<span class="tag" style="background:#f1f5f9;color:#64748b">今日無任務</span>';
-    } else if (todayDp.done >= todayDp.total) {
-      dailyTag = '<span class="tag tag-g">✓ 今日完成</span>';
+    if (!todayDp) {
+      dailyTag = '<span class="tag" style="background:#f1f5f9;color:#64748b">未開始</span>';
+    } else if (todayDp.quizDone) {
+      const pct = todayDp.totalWords ? Math.round((todayDp.quizCorrect||0)/todayDp.totalWords*100) : 0;
+      dailyTag = `<span class="tag tag-g">✓ 完成 ${pct}%</span>`;
+    } else if (todayDp.quizStarted) {
+      const done = (todayDp.answeredIds||[]).length;
+      const total = todayDp.totalWords||0;
+      dailyTag = `<span class="tag tag-b">測驗中 ${done}/${total}</span>`;
+    } else if (todayDp.studyDone) {
+      dailyTag = '<span class="tag tag-a">背誦✓ 測驗未做</span>';
+    } else if (todayDp.doneIds?.length) {
+      dailyTag = `<span class="tag tag-a">背誦中 ${todayDp.doneIds.length}/${todayDp.total||'?'}</span>`;
     } else {
-      const pct = Math.round(todayDp.done / todayDp.total * 100);
-      dailyTag = `<span class="tag tag-a">${todayDp.done}/${todayDp.total} (${pct}%)</span>`;
+      dailyTag = '<span class="tag" style="background:#f1f5f9;color:#64748b">未開始</span>';
     }
     const medal = i===0?'🥇':i===1?'🥈':i===2?'🥉':'';
     const row = document.createElement('div');
@@ -1304,7 +1461,7 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
           <div style="font-size:22px;font-weight:700" id="daily-count">載入中...</div>
           <div style="font-size:12px;opacity:0.8;margin-top:2px" id="daily-desc"></div>
         </div>
-        <button onclick="startDaily()" style="padding:9px 16px;border-radius:8px;border:none;background:rgba(255,255,255,0.2);color:#fff;cursor:pointer;font-size:14px;font-weight:600;backdrop-filter:blur(4px)">開始 →</button>
+        <button id="daily-start-btn" onclick="startDaily()" style="padding:9px 16px;border-radius:8px;border:none;background:rgba(255,255,255,0.2);color:#fff;cursor:pointer;font-size:14px;font-weight:600;backdrop-filter:blur(4px)">開始 →</button>
       </div>
     </div>
     <h3>課程進度</h3>
@@ -1451,17 +1608,33 @@ happy, 快樂的, adj."></textarea>
   <div id="at-settings" style="display:none">
     <h3 class="mb12">每日任務設定</h3>
     <div class="card mb12">
-      <label>每日單字數量上限</label>
-      <select id="setting-daily-limit" class="mb8">
+      <label>每日新單字數量</label>
+      <select id="setting-new-per-day" class="mb8">
         <option value="10">10 個</option>
         <option value="15">15 個</option>
         <option value="20" selected>20 個</option>
         <option value="25">25 個</option>
         <option value="30">30 個</option>
       </select>
-      <div class="text-muted mb12" style="font-size:12px">複習單字優先，剩餘名額給新單字，合計不超過此數量</div>
-      <button class="btn btn-p" style="width:100%" onclick="saveSettings()">儲存設定</button>
-      <div id="settings-msg" style="margin-top:8px;font-size:13px"></div>
+      <div class="text-muted mb12" style="font-size:12px">每天全班統一學習的新單字數量，不足則從下一課補足</div>
+      <label>課程起始日期</label>
+      <input type="date" id="setting-start-date" class="mb8"/>
+      <div class="text-muted mb12" style="font-size:12px">從此日期開始計算每天應背的新單字，新加入學生從當天任務開始</div>
+      <button class="btn btn-p" style="width:100%;margin-bottom:8px" onclick="saveSettings()">儲存設定</button>
+      <div id="settings-msg" style="font-size:13px"></div>
+    </div>
+
+    <h3 class="mb8">今日任務預覽 / 手動指定</h3>
+    <div class="card mb12">
+      <div id="today-plan-preview"><div class="loading">載入中...</div></div>
+      <div class="mt12">
+        <label>手動指定今日單字（留空則使用系統自動排程）</label>
+        <div class="notice notice-i mb8" style="font-size:12px">每行一個單字 ID，或直接從下方清單勾選</div>
+        <div id="manual-word-picker" style="max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px;margin-bottom:8px"></div>
+        <button class="btn btn-p" style="width:100%" onclick="saveTodayPlan()">指定今日任務</button>
+        <button class="btn mt8" style="width:100%" onclick="clearTodayPlan()">清除手動指定（恢復自動）</button>
+        <div id="plan-msg" style="margin-top:8px;font-size:13px"></div>
+      </div>
     </div>
   </div>
 
