@@ -90,11 +90,32 @@ function getTodayNewWordIds() {
   return computeNewWordsForDate(todayStr());
 }
 
+// get the word IDs a student should see today
+// new students start from today's position, not day 1
+function getStudentTodayNewWordIds(u) {
+  const plan = APP_SETTINGS.todayPlan;
+  if (plan && plan.wordIds && plan.wordIds.length) return plan.wordIds;
+  // if student joined after start date, use their join date's position
+  const joinDate = u.joinDate || APP_SETTINGS.startDate || todayStr();
+  const startDate = APP_SETTINGS.startDate || todayStr();
+  const perDay = APP_SETTINGS.newWordsPerDay || 20;
+  const msPerDay = 86400000;
+  // use whichever is later: system's today position OR student's join position
+  const systemDayIdx = Math.max(0, Math.floor((new Date(todayStr()) - new Date(startDate)) / msPerDay));
+  const joinDayIdx = Math.max(0, Math.floor((new Date(joinDate) - new Date(startDate)) / msPerDay));
+  // student sees today's words (system position), but never words before their join date
+  const effectiveDayIdx = Math.max(systemDayIdx, joinDayIdx);
+  const offset = effectiveDayIdx * perDay;
+  const ordered = [];
+  AC.forEach(c => AW.filter(w => w.cid===c.id).forEach(w => ordered.push(w.id)));
+  return ordered.slice(offset, offset + perDay);
+}
+
 function getDailyWords() {
   const u = CU.data; const today = todayStr();
   const sr = u.sr || {};
-  // 1. today's new words (system-assigned, same for all students)
-  const newIds = getTodayNewWordIds();
+  // 1. today's new words — same for all students, but new students start from today
+  const newIds = getStudentTodayNewWordIds(u);
   const newWords = newIds.map(id => AW.find(w=>w.id===id)).filter(Boolean);
   // 2. personal review words (due today by SR)
   const reviewWords = [];
@@ -148,7 +169,7 @@ window.doLogin = async function() {
     if (role === 'student') {
       u = await getOne('users', name);
       if (!u) {
-        await setOne('users', name, { score:0, known:{}, completed_courses:[], createdAt: Date.now(), role: 'student' });
+        await setOne('users', name, { score:0, known:{}, completed_courses:[], createdAt: Date.now(), role: 'student', joinDate: todayStr() });
         u = await getOne('users', name);
       }
     }
