@@ -69,9 +69,12 @@ function getDailyWords() {
   const u = CU.data; const today = todayStr();
   const sr = u.sr || {}; const known = u.known || {};
   const due = [], newW = [];
-  AW.forEach(w => {
-    if (sr[w.id]) { if (sr[w.id].nextDate <= today) due.push(w); }
-    else if (!known[w.id]) { newW.push(w); }
+  // iterate in course order (AC is already sorted by sortOrder)
+  AC.forEach(c => {
+    AW.filter(w => w.cid === c.id).forEach(w => {
+      if (sr[w.id]) { if (sr[w.id].nextDate <= today) due.push(w); }
+      else if (!known[w.id]) { newW.push(w); }
+    });
   });
   const pool = [...due];
   for (let i = 0; i < newW.length && pool.length < 20; i++) pool.push(newW[i]);
@@ -113,12 +116,15 @@ window.doLogin = async function() {
   if (!name) { showErr(err, '請輸入姓名'); return; }
   err.style.display='block'; err.style.color='var(--muted)'; err.textContent='登入中...';
   try {
-    let u = await getOne('users', name);
-    if (!u) {
-      await setOne('users', name, { score:0, known:{}, completed_courses:[], createdAt: Date.now() });
+    let u = null;
+    if (role === 'student') {
       u = await getOne('users', name);
+      if (!u) {
+        await setOne('users', name, { score:0, known:{}, completed_courses:[], createdAt: Date.now(), role: 'student' });
+        u = await getOne('users', name);
+      }
     }
-    CU = { name, role, data: u };
+    CU = { name, role, data: u || {} };
     await loadAll();
     err.style.display = 'none';
     if (role === 'admin') {
@@ -158,7 +164,7 @@ async function refreshHome() {
   document.getElementById('h-total').textContent = AW.length;
   document.getElementById('h-learned').textContent = Object.keys(known).length;
   document.getElementById('stu-score').textContent = u.score;
-  const all = await getAll('users');
+  const all = (await getAll('users')).filter(u => u.role !== 'admin');
   all.sort((a,b) => b.score - a.score);
   const ri = all.findIndex(x => x.id === CU.name);
   document.getElementById('h-rank').textContent = '#' + (ri+1);
@@ -601,7 +607,7 @@ window.resetQuiz = function() {
 // ── rank ─────────────────────────────────────────────────────
 async function renderRank() {
   const list=document.getElementById('rank-list'); list.innerHTML='<div class="loading">載入中...</div>';
-  const all=await getAll('users'); all.sort((a,b)=>b.score-a.score);
+  const all=(await getAll('users')).filter(u=>u.role!=='admin'); all.sort((a,b)=>b.score-a.score);
   list.innerHTML='';
   if(!all.length){list.innerHTML='<p class="text-muted text-sm" style="padding:8px">暫無排名資料</p>';return;}
   all.forEach((u,i)=>{
@@ -847,7 +853,7 @@ window.deleteCourse = async function(id) {
 window.renderStudentList = async function renderStudentList() {
   const list = document.getElementById('student-list-view');
   list.innerHTML = '<div class="loading">載入中...</div>';
-  const all = await getAll('users');
+  const all = (await getAll('users')).filter(u => u.role !== 'admin');
   all.sort((a,b) => b.score - a.score);
   const today = todayStr();
   list.innerHTML = '';
