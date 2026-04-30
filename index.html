@@ -50,6 +50,7 @@ let dailyQuizWords = [], dailyQI = 0, dailyQS = 0, dailyQC = 0;
 let wrongWords = []; // track wrong answers in daily quiz
 let dailyRetryCount = 0; // how many retries done today
 const PASS_THRESHOLD = 0.9; // 90% to pass
+let makeupDate = null; // if doing makeup task, store the date
 const UNSPLASH_KEY = 'YpPAMHEVCgNql4bLuSCKDpwAoGJWSAOi_6_IpTDY5IY';
 
 // ── image cache ───────────────────────────────────────────────
@@ -266,6 +267,77 @@ async function refreshHome() {
     }
   }
   renderCL();
+  renderMissedTasks();
+}
+
+// get all dates from joinDate to yesterday that have incomplete tasks
+function getMissedDates() {
+  const u = CU.data;
+  const dp = u.daily_progress || {};
+  const joinDate = u.joinDate || APP_SETTINGS.startDate || todayStr();
+  const today = todayStr();
+  const missed = [];
+  let d = new Date(joinDate);
+  const todayD = new Date(today);
+  while (d < todayD) {
+    const ds = d.toISOString().slice(0,10);
+    const dayDp = dp[ds];
+    if (!dayDp || !dayDp.quizDone) {
+      // check if there were words assigned that day
+      const wordIds = computeNewWordsForDate(ds);
+      if (wordIds.length > 0) missed.push(ds);
+    }
+    d.setDate(d.getDate() + 1);
+  }
+  return missed.reverse(); // most recent first
+}
+
+function renderMissedTasks() {
+  const missed = getMissedDates();
+  const section = document.getElementById('missed-tasks-section');
+  const list = document.getElementById('missed-tasks-list');
+  const countEl = document.getElementById('missed-count');
+  if (!missed.length) { section.style.display='none'; return; }
+  section.style.display = 'block';
+  countEl.textContent = missed.length + ' 天未完成';
+  list.innerHTML = '';
+  missed.forEach(ds => {
+    const u = CU.data;
+    const dp = u.daily_progress||{};
+    const dayDp = dp[ds];
+    const wordIds = computeNewWordsForDate(ds);
+    const words = wordIds.map(id=>AW.find(w=>w.id===id)).filter(Boolean);
+    // format date display
+    const dateObj = new Date(ds);
+    const dateLabel = `${dateObj.getMonth()+1}/${dateObj.getDate()}（${['日','一','二','三','四','五','六'][dateObj.getDay()]}）`;
+    let statusTag = '';
+    if (!dayDp) {
+      statusTag = '<span class="tag" style="background:#f1f5f9;color:#94a3b8">未開始</span>';
+    } else if (dayDp.studyDone && !dayDp.quizDone) {
+      statusTag = '<span class="tag tag-a">背誦完成・測驗未做</span>';
+    } else if (dayDp.doneIds?.length) {
+      statusTag = `<span class="tag tag-a">背誦中 ${dayDp.doneIds.length}/${words.length}</span>`;
+    } else {
+      statusTag = '<span class="tag" style="background:#f1f5f9;color:#94a3b8">未開始</span>';
+    }
+    const card = document.createElement('div');
+    card.className = 'card mb8';
+    card.style.cssText = 'padding:12px 14px;border-left:3px solid var(--warn)';
+    card.innerHTML = `
+      <div class="flex gap8 mb8" style="justify-content:space-between;align-items:center">
+        <div>
+          <span class="bold text-sm">${dateLabel}</span>
+          <span style="margin-left:8px">${statusTag}</span>
+        </div>
+        <span class="text-muted" style="font-size:12px">${words.length} 個單字</span>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:3px;margin-bottom:10px">
+        ${words.slice(0,8).map(w=>`<span style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px 7px;font-size:11px">${w.en}</span>`).join('')}
+        ${words.length>8?`<span style="font-size:11px;color:var(--muted)">...等 ${words.length} 個</span>`:''}
+      </div>
+      <button class="btn btn-p btn-sm" style="width:100%" onclick="startMakeup('${ds}')">補做此天任務</button>`;
+    list.appendChild(card);
+  });
 }
 
 function renderCL() {
@@ -294,6 +366,67 @@ window.loadStudy = function() {
   SW = AW.filter(w => w.cid===document.getElementById('study-course').value);
   SI=0; showSC();
 };
+// ── makeup task (補做) ───────────────────────────────────────
+window.startMakeup = function(dateStr) {
+  const u = CU.data;
+  const dp = u.daily_progress||{};
+  const dayDp = dp[dateStr];
+  if (dayDp?.quizDone) { alert('此天任務已完成！'); return; }
+
+  makeupDate = dateStr;
+  dailyMode = true;
+  dailyPhase = 'study';
+  window._dailyForgot = new Set();
+  wrongWords = [];
+  dailyRetryCount = 0;
+
+  // get words for that specific date
+  const wordIds = computeNewWordsForDate(dateStr);
+  // also include personal reviews due on that date
+  const sr = u.sr||{};
+  const reviewWords = [];
+  AC.forEach(c => {
+    AW.filter(w=>w.cid===c.id).forEach(w=>{
+      if (sr[w.id] && sr[w.id].nextDate <= dateStr && !wordIds.includes(w.id)) reviewWords.push(w);
+    });
+  });
+  SW = [...wordIds.map(id=>AW.find(w=>w.id===id)).filter(Boolean), ...reviewWords];
+  dailyWordIds = new Set(SW.map(w=>w.id));
+
+  if (!SW.length) { alert('此天無單字任務'); return; }
+
+  // init makeup progress record
+  if (!dp[dateStr]) {
+    dp[dateStr] = { total: SW.length, done: 0, doneIds: [], quizDone: false, isMakeup: true };
+    u.daily_progress = dp;
+    updateOne('users', CU.name, { daily_progress: dp });
+  }
+
+  // resume if partially done
+  if (dayDp?.studyDone && !dayDp?.quizDone) {
+    dailyPhase = 'quiz';
+    dailyQI = 0; dailyQS = 0; dailyQC = 0;
+    dailyQuizWords = shuffle([...SW]);
+    _enterStudyTabWithQuiz();
+    startDailyQuizFromWords(dailyQuizWords, SW.length);
+    return;
+  }
+
+  SI = 0;
+  _enterStudyTabWithQuiz();
+
+  // show makeup header
+  const dateObj = new Date(dateStr);
+  const dateLabel = `${dateObj.getMonth()+1}/${dateObj.getDate()} 補做任務`;
+  const studyHeader = document.querySelector('#t-study .flex.gap8.mb12');
+  if (studyHeader) {
+    const badge = document.createElement('span');
+    badge.className = 'tag tag-a';
+    badge.textContent = '📋 ' + dateLabel;
+    studyHeader.appendChild(badge);
+  }
+};
+
 window.startDaily = function() {
   const today = todayStr();
   const u = CU.data;
@@ -595,14 +728,16 @@ async function finishDailyTask() {
   }
 
   // ── passed → mark complete and update data ────────────────────
+  const targetDate = makeupDate || today;
   const dp = {...(u.daily_progress||{})};
-  if (!dp[today]) dp[today] = { total: totalWords, done: totalWords, doneIds: SW.map(w=>w.id), quizDone: false };
-  dp[today].quizDone = true;
-  dp[today].done = dp[today].total;
-  dp[today].finalPct = pct;
-  dp[today].retries = dailyRetryCount;
-  dp[today].totalWords = totalWords;
-  dp[today].quizCorrect = dailyQC;
+  if (!dp[targetDate]) dp[targetDate] = { total: totalWords, done: totalWords, doneIds: SW.map(w=>w.id), quizDone: false };
+  dp[targetDate].quizDone = true;
+  dp[targetDate].done = dp[targetDate].total;
+  dp[targetDate].finalPct = pct;
+  dp[targetDate].retries = dailyRetryCount;
+  dp[targetDate].totalWords = totalWords;
+  dp[targetDate].quizCorrect = dailyQC;
+  if (makeupDate) dp[targetDate].isMakeup = true;
   u.daily_progress = dp;
 
   // update SR level for all daily words
@@ -654,6 +789,7 @@ async function finishDailyTask() {
       <button class="btn btn-p" style="width:100%" onclick="stuTab('home', document.querySelector('#s-student .tab'))">回主頁</button>
     </div>`;
   dailyMode = false;
+  makeupDate = null;
 }
 
 window.retryDailyQuiz = function() {
@@ -1381,7 +1517,7 @@ function showStudentDetail(u) {
     const label = i===0 ? '今' : (d.getMonth()+1)+'/'+(d.getDate());
     let bg, color, icon;
     if (!dpDay || dpDay.total===0) { bg='#f1f5f9'; color='#94a3b8'; icon='—'; }
-    else if (dpDay.quizDone) { bg='var(--sl)'; color='var(--success)'; icon=(dpDay.finalPct||'✓')+(dpDay.finalPct?'%':''); }
+    else if (dpDay.quizDone) { bg=dpDay.isMakeup?'#e0f2fe':'var(--sl)'; color=dpDay.isMakeup?'#0369a1':'var(--success)'; icon=(dpDay.finalPct||'✓')+(dpDay.finalPct?'%':'')+( dpDay.isMakeup?'📋':''); }
     else { bg='var(--wl)'; color='var(--warn)'; icon=dpDay.done+'/'+dpDay.total; }
     histHTML += `<div style="background:${bg};color:${color};border-radius:6px;padding:5px 7px;text-align:center;font-size:11px;font-weight:500;min-width:36px">
       <div>${label}</div><div style="margin-top:1px">${icon}</div></div>`;
@@ -1552,6 +1688,13 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
         </div>
         <button id="daily-start-btn" onclick="startDaily()" style="padding:9px 16px;border-radius:8px;border:none;background:rgba(255,255,255,0.2);color:#fff;cursor:pointer;font-size:14px;font-weight:600;backdrop-filter:blur(4px)">開始 →</button>
       </div>
+    </div>
+    <div id="missed-tasks-section" style="display:none;margin-bottom:12px">
+      <div class="flex gap8 mb8" style="justify-content:space-between;align-items:center">
+        <h3>⚠️ 未完成的任務</h3>
+        <span class="tag tag-a" id="missed-count"></span>
+      </div>
+      <div id="missed-tasks-list"></div>
     </div>
     <h3>課程進度</h3>
     <div class="card" id="course-list"><div class="loading">載入中...</div></div>
