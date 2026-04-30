@@ -153,10 +153,33 @@ async function markSR(wordId, remembered) {
 }
 
 async function loadAll() {
-  const [cs, ws] = await Promise.all([getAll('courses'), getAll('words')]);
-  // sort by sortOrder first, fallback to createdAt
+  const [cs, ws, settingsDoc, planDoc] = await Promise.all([
+    getAll('courses'),
+    getAll('words'),
+    getOne('settings', 'app'),
+    getOne('daily_plan', todayStr())
+  ]);
   AC = cs.sort((a,b) => (a.sortOrder??a.createdAt??0) - (b.sortOrder??b.createdAt??0));
   AW = ws.sort((a,b) => (a.createdAt||0) - (b.createdAt||0));
+
+  if (settingsDoc) {
+    APP_SETTINGS = {
+      dailyLimit: settingsDoc.dailyLimit || 20,
+      newWordsPerDay: settingsDoc.newWordsPerDay || 20,
+      startDate: settingsDoc.startDate || todayStr()
+    };
+    // if startDate was missing in DB, persist it now so it stays fixed
+    if (!settingsDoc.startDate) {
+      setOne('settings', 'app', { ...settingsDoc, startDate: todayStr() });
+      APP_SETTINGS.startDate = todayStr();
+    }
+  } else {
+    // first time ever: auto-create settings with today as startDate
+    const initSettings = { dailyLimit: 20, newWordsPerDay: 20, startDate: todayStr() };
+    setOne('settings', 'app', initSettings);
+    APP_SETTINGS = initSettings;
+  }
+  APP_SETTINGS.todayPlan = planDoc || null;
 }
 
 // ── login ────────────────────────────────────────────────────
@@ -1049,15 +1072,20 @@ async function renderAdminCourses() {
 
 window.loadSettings = async function() {
   const s = await getOne('settings', 'app');
+  const sel = document.getElementById('setting-new-per-day');
+  const sd = document.getElementById('setting-start-date');
   if (s) {
-    const sel = document.getElementById('setting-new-per-day');
     if (sel) sel.value = s.newWordsPerDay || 20;
-    const sd = document.getElementById('setting-start-date');
-    if (sd) sd.value = s.startDate || todayStr();
+    if (sd) sd.value = s.startDate || APP_SETTINGS.startDate || todayStr();
   } else {
-    const sd = document.getElementById('setting-start-date');
-    if (sd) sd.value = todayStr();
+    if (sel) sel.value = 20;
+    if (sd) sd.value = APP_SETTINGS.startDate || todayStr();
   }
+  // show current day index for reference
+  const dayIdx = Math.max(0, Math.floor((new Date(todayStr()) - new Date(APP_SETTINGS.startDate||todayStr())) / 86400000));
+  const perDay = APP_SETTINGS.newWordsPerDay || 20;
+  const infoEl = document.getElementById('settings-day-info');
+  if (infoEl) infoEl.textContent = `目前第 ${dayIdx+1} 天，今日為第 ${dayIdx*perDay+1}～${(dayIdx+1)*perDay} 個單字`;
   renderTodayPlanPreview();
   renderManualWordPicker();
 };
@@ -1680,7 +1708,8 @@ happy, 快樂的, adj."></textarea>
       <div class="text-muted mb12" style="font-size:12px">每天全班統一學習的新單字數量，不足則從下一課補足</div>
       <label>課程起始日期</label>
       <input type="date" id="setting-start-date" class="mb8"/>
-      <div class="text-muted mb12" style="font-size:12px">從此日期開始計算每天應背的新單字，新加入學生從當天任務開始</div>
+      <div class="text-muted mb8" style="font-size:12px">從此日期開始計算每天應背的新單字，新加入學生從當天任務開始</div>
+      <div id="settings-day-info" class="notice notice-i" style="font-size:12px;margin-bottom:12px"></div>
       <button class="btn btn-p" style="width:100%;margin-bottom:8px" onclick="saveSettings()">儲存設定</button>
       <div id="settings-msg" style="font-size:13px"></div>
     </div>
