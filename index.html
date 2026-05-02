@@ -102,11 +102,22 @@ window.doLogin = async function() {
     await ensureSystemAdmin();
     // check system admin
     let account = null;
-    if (accountId === SYSTEM_ADMIN.id && password === SYSTEM_ADMIN.password) {
-      account = { id: SYSTEM_ADMIN.id, role: 'admin', name: SYSTEM_ADMIN.name };
+    if (accountId === SYSTEM_ADMIN.id) {
+      // system admin: always check hardcoded password first
+      if (password === SYSTEM_ADMIN.password) {
+        account = { id: SYSTEM_ADMIN.id, role: 'admin', name: SYSTEM_ADMIN.name };
+      } else {
+        // also try DB in case password was changed
+        const doc = await getOne('accounts', accountId);
+        if (doc && doc.password === password) {
+          account = { id: doc.id, role: doc.role||'admin', name: doc.name||'系統管理員', classes: doc.classes||[] };
+        } else {
+          showErr(err, '密碼錯誤'); return;
+        }
+      }
     } else {
       const doc = await getOne('accounts', accountId);
-      if (!doc) { showErr(err, '帳號不存在'); return; }
+      if (!doc) { showErr(err, '帳號不存在：' + accountId); return; }
       if (doc.password !== password) { showErr(err, '密碼錯誤'); return; }
       account = { id: doc.id, role: doc.role, name: doc.name, classes: doc.classes || [] };
     }
