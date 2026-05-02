@@ -162,16 +162,25 @@ window.doLogin = async function() {
 };
 
 async function enterStudentView() {
-  // if student has classes, show class selector; else show empty state
-  const classes = (CU.classes || []).map(cid => ALL_CLASSES.find(c => c.id===cid)).filter(Boolean);
-  if (classes.length === 0) {
-    showScreen('s-no-class');
-    return;
+  const classIds = CU.classes || [];
+  if (classIds.length === 0) { showScreen('s-no-class'); return; }
+  // ensure all assigned classes exist in ALL_CLASSES (create if missing)
+  for (const cid of classIds) {
+    if (!ALL_CLASSES.find(c => c.id===cid)) {
+      // parse level/grade from id like "高中-高一"
+      const parts = cid.split('-');
+      const level = parts[0] || cid;
+      const grade = parts.slice(1).join('-') || cid;
+      const newCls = { id: cid, level, grade, createdAt: Date.now() };
+      await setOne('classes', cid, newCls);
+      ALL_CLASSES.push(newCls);
+    }
   }
+  const classes = classIds.map(cid => ALL_CLASSES.find(c => c.id===cid)).filter(Boolean);
+  if (classes.length === 0) { showScreen('s-no-class'); return; }
   if (classes.length === 1) {
     await selectClass(classes[0].id);
   } else {
-    // multiple classes — show selector
     renderClassSelector(classes);
     showScreen('s-class-select');
   }
