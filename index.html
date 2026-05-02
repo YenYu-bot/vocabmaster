@@ -826,8 +826,11 @@ window.createStudent=async function(){
     if(migrateFrom){
       const oldData=await getOne('users',migrateFrom);
       if(oldData){
-        const{id:_,...rest}=oldData;
-        await setOne('users',id,{...rest,id:undefined,joinDate:rest.joinDate||todayStr()});
+        const{id:_,role:_r,...rest}=oldData;
+        // remove undefined fields before writing to Firebase
+        const cleanData={...rest,joinDate:rest.joinDate||todayStr()};
+        Object.keys(cleanData).forEach(k=>{if(cleanData[k]===undefined)delete cleanData[k];});
+        await setOne('users',id,cleanData);
         msg.style.color='var(--success)';msg.textContent=`✓ 帳號 ${id} 建立完成，已遷移「${migrateFrom}」的資料！`;
       } else {
         msg.style.color='var(--warn)';msg.textContent=`✓ 帳號 ${id} 建立完成（找不到「${migrateFrom}」的舊資料）`;
