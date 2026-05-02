@@ -567,6 +567,26 @@ function renderMissedTasks() {
 // ── study ─────────────────────────────────────────────────────
 function loadSC() {
   const sel=document.getElementById('study-course'); sel.innerHTML='';
+  if(!AC.length){
+    const o=document.createElement('option');o.value='';o.textContent='（無課程）';sel.appendChild(o);
+    // show reload button
+    const existing=document.getElementById('reload-course-btn');
+    if(!existing){
+      const btn=document.createElement('button');
+      btn.id='reload-course-btn';btn.className='btn btn-sm mt8';btn.style.width='100%';
+      btn.textContent='🔄 重新載入課程';
+      btn.onclick=async()=>{
+        if(!CURRENT_CLASS) return;
+        await loadAllForClass(CURRENT_CLASS.id);
+        loadSC(); loadQC();
+      };
+      document.getElementById('t-study').insertBefore(btn, document.getElementById('t-study').children[1]);
+    }
+    return;
+  }
+  // remove reload button if courses loaded
+  const existing=document.getElementById('reload-course-btn');
+  if(existing) existing.remove();
   AC.forEach(c=>{const o=document.createElement('option');o.value=c.id;o.textContent=c.name;sel.appendChild(o);});
   dailyMode=false; loadStudy();
 }
@@ -1159,6 +1179,18 @@ async function renderAccountList(){
     <button class="btn btn-p" style="width:100%" onclick="createAdmin()">建立老師帳號</button>
     <div id="create-admin-msg" style="margin-top:8px;font-size:13px"></div>`;
   list.appendChild(adminForm);
+
+  // migrate tool
+  const migrateForm=document.createElement('div');migrateForm.className='card mt12';
+  migrateForm.style.cssText='border-left:3px solid var(--brand)';
+  migrateForm.innerHTML=`<div class="bold text-sm mb8">🔄 舊資料遷移工具</div>
+    <div class="text-muted mb12" style="font-size:13px">將舊帳號（姓名）的學習資料搬移到新帳號（學號），每行一筆，格式：<br>
+    <code style="background:var(--bg);padding:2px 6px;border-radius:4px;font-size:12px">學號 → 舊姓名</code><br>
+    例如：<code style="background:var(--bg);padding:2px 6px;border-radius:4px;font-size:12px">bhcs00001 → 王小明</code></div>
+    <textarea id="migrate-text" rows="6" placeholder="bhcs00001 → 王小明&#10;bhcs00002 → 李小華&#10;bhcs00003 → 張大明"></textarea>
+    <button class="btn btn-p" style="width:100%" onclick="batchMigrate()">開始遷移</button>
+    <div id="migrate-msg" style="margin-top:8px;font-size:13px;white-space:pre-line"></div>`;
+  list.appendChild(migrateForm);
 }
 
 window.createStudent=async function(){
@@ -1210,6 +1242,58 @@ window.createStudent=async function(){
     document.getElementById('new-stu-migrate').value='';
     renderAccountList();
   }catch(e){msg.style.color='var(--danger)';msg.textContent='建立失敗：'+e.message;}
+};
+
+window.batchMigrate=async function(){
+  const text=document.getElementById('migrate-text').value.trim();
+  const msg=document.getElementById('migrate-msg');
+  if(!text){msg.style.color='var(--danger)';msg.textContent='請輸入遷移對應';return;}
+  // parse lines: "bhcs00001 → 王小明" or "bhcs00001->王小明" or "bhcs00001 王小明"
+  const pairs=[];
+  text.split('\n').forEach(line=>{
+    line=line.trim(); if(!line)return;
+    let newId,oldName;
+    if(line.includes('→')){[newId,oldName]=line.split('→').map(s=>s.trim());}
+    else if(line.includes('->')){[newId,oldName]=line.split('->').map(s=>s.trim());}
+    else{const parts=line.split(/\s+/);newId=parts[0];oldName=parts.slice(1).join(' ');}
+    if(newId&&oldName) pairs.push({newId:newId.toLowerCase(),oldName});
+  });
+  if(!pairs.length){msg.style.color='var(--danger)';msg.textContent='格式不正確，請檢查輸入';return;}
+  msg.style.color='var(--muted)';msg.textContent=`準備遷移 ${pairs.length} 筆資料...`;
+  const results=[];
+  for(const {newId,oldName} of pairs){
+    try{
+      // check new account exists
+      const account=await getOne('accounts',newId);
+      if(!account){results.push(`❌ ${newId}：帳號不存在`);continue;}
+      // get old data
+      const oldData=await getOne('users',oldName);
+      if(!oldData){results.push(`⚠️ ${newId} ← ${oldName}：找不到舊資料`);continue;}
+      // check if new account already has data
+      const existing=await getOne('users',newId);
+      if(existing&&Object.keys(existing.known||{}).length>0){
+        results.push(`⚠️ ${newId}（${account.name}）：已有資料（已學 ${Object.keys(existing.known).length} 個），略過。若要覆蓋請先刪除學習記錄`);
+        continue;
+      }
+      // migrate
+      const allowedFields=['score','known','sr','completed_courses','daily_progress','quiz_stats','achievements','notebook','joinDate'];
+      const cleanData={};
+      allowedFields.forEach(k=>{if(oldData[k]!==undefined&&oldData[k]!==null)cleanData[k]=oldData[k];});
+      if(!cleanData.joinDate)cleanData.joinDate=oldData.createdAt?new Date(oldData.createdAt).toISOString().slice(0,10):todayStr();
+      if(!cleanData.score)cleanData.score=0;
+      if(!cleanData.known)cleanData.known={};
+      if(!cleanData.sr)cleanData.sr={};
+      if(!cleanData.completed_courses)cleanData.completed_courses=[];
+      if(!cleanData.daily_progress)cleanData.daily_progress={};
+      if(!cleanData.quiz_stats)cleanData.quiz_stats={};
+      if(!cleanData.achievements)cleanData.achievements=[];
+      await setOne('users',newId,cleanData);
+      const learnedCount=Object.keys(cleanData.known).length;
+      results.push(`✅ ${newId}（${account.name}） ← ${oldName}：遷移成功（已學 ${learnedCount} 個單字，積分 ${cleanData.score}）`);
+    }catch(e){results.push(`❌ ${newId}：發生錯誤 ${e.message}`);}
+  }
+  msg.style.color='var(--text)';
+  msg.textContent=results.join('\n');
 };
 
 window.createAdmin=async function(){
