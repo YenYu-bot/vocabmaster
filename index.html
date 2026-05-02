@@ -903,10 +903,59 @@ window.ensureClass=async function(level,grade){
   }
   CURRENT_CLASS=cls;
   await loadAllForClass(cid);
-  // switch to courses tab for this class
   document.getElementById('at-class-label').textContent=level+' '+grade;
   adminTab('courses',null);
   document.getElementById('at-courses').scrollIntoView({behavior:'smooth'});
+};
+
+// ── data repair: assign classId to legacy courses/words ───────
+window.repairLegacyData = async function() {
+  const targetClassId = document.getElementById('repair-target-class').value;
+  if (!targetClassId) { alert('請選擇要指派的班級'); return; }
+  const msg = document.getElementById('repair-msg');
+  msg.style.color = 'var(--muted)'; msg.textContent = '掃描中...';
+
+  // fetch ALL courses and words from Firebase
+  const [allCourses, allWords] = await Promise.all([getAll('courses'), getAll('words')]);
+
+  // find legacy courses (no classId or empty classId)
+  const legacyCourses = allCourses.filter(c => !c.classId);
+  const legacyWords = allWords.filter(w => {
+    const course = allCourses.find(c => c.id === w.cid);
+    return course && !course.classId;
+  });
+
+  if (!legacyCourses.length) {
+    msg.style.color = 'var(--success)';
+    msg.textContent = '✓ 沒有發現舊格式課程，無需修復！';
+    return;
+  }
+
+  msg.textContent = `找到 ${legacyCourses.length} 個舊課程、${legacyWords.length} 個單字，指派到「${targetClassId}」中...`;
+
+  // ensure target class exists
+  let cls = ALL_CLASSES.find(c => c.id === targetClassId);
+  if (!cls) {
+    const [level, grade] = targetClassId.split('-');
+    await setOne('classes', targetClassId, { id:targetClassId, level, grade, createdAt: Date.now() });
+    ALL_CLASSES.push({ id:targetClassId, level, grade });
+  }
+
+  // batch update courses
+  await Promise.all(legacyCourses.map(c =>
+    updateOne('courses', c.id, { classId: targetClassId })
+  ));
+
+  // reload AC to reflect changes
+  const refreshed = await getAll('courses');
+  AC = refreshed.sort((a,b) => (a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0));
+  AW = allWords.sort((a,b) => (a.createdAt||0)-(b.createdAt||0));
+
+  msg.style.color = 'var(--success)';
+  msg.textContent = `✓ 完成！已將 ${legacyCourses.length} 個課程（${legacyWords.length} 個單字）指派到「${targetClassId}」`;
+
+  // refresh class list counts
+  renderClassList();
 };
 
 // ── words / courses (admin) ───────────────────────────────────
@@ -1399,6 +1448,33 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
   </div>
 
   <div id="at-classes" style="display:none">
+    <div class="card mb12" style="border-left:3px solid var(--warn)">
+      <div class="bold text-sm mb8">🔧 舊資料修復</div>
+      <div class="text-muted mb12" style="font-size:13px">如果升級前已有課程和單字，用此功能一鍵將它們指派到指定班級</div>
+      <label>指派到哪個班級</label>
+      <select id="repair-target-class" class="mb8">
+        <option value="">-- 請選擇班級 --</option>
+        <optgroup label="國小">
+          <option value="國小-D級">國小 D級</option>
+          <option value="國小-C級">國小 C級</option>
+          <option value="國小-B級">國小 B級</option>
+          <option value="國小-A級">國小 A級</option>
+          <option value="國小-S級">國小 S級</option>
+        </optgroup>
+        <optgroup label="國中">
+          <option value="國中-國一">國中 國一</option>
+          <option value="國中-國二">國中 國二</option>
+          <option value="國中-國三">國中 國三</option>
+        </optgroup>
+        <optgroup label="高中">
+          <option value="高中-高一">高中 高一</option>
+          <option value="高中-高二">高中 高二</option>
+          <option value="高中-高三">高中 高三</option>
+        </optgroup>
+      </select>
+      <button class="btn btn-p" style="width:100%" onclick="repairLegacyData()">開始修復</button>
+      <div id="repair-msg" style="margin-top:8px;font-size:13px"></div>
+    </div>
     <div id="class-list"><div class="loading">載入中...</div></div>
   </div>
 
