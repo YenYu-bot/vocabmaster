@@ -49,6 +49,7 @@ let AW = [], AC = [];    // all words, all courses (for current class)
 let APP_SETTINGS = { dailyLimit: 20, newWordsPerDay: 20, startDate: todayStr() };
 let CURRENT_CLASS = null; // currently selected class id
 let ALL_CLASSES = [];    // all class definitions
+let CLASS_DATA_CACHE = {}; // { classId: { AC, AW, settings } } for multi-class students
 
 let SW = [], SI = 0;
 let dailyMode = false, makeupDate = null;
@@ -56,6 +57,7 @@ let dailyWordIds = new Set(), dailyPhase = 'study';
 let dailyQuizWords = [], dailyQI = 0, dailyQS = 0, dailyQC = 0;
 let wrongWords = [], dailyRetryCount = 0;
 let QW = [], QI = 0, QS = 0, QC = 0;
+let dailyCorrectIds = []; // track words answered correctly in daily quiz
 
 function todayStr() {
   // UTC+8
@@ -113,10 +115,26 @@ window.doLogin = async function() {
     if (CU.role === 'student') {
       CU_DATA = await getOne('users', CU.id);
       if (!CU_DATA) {
+        // only create new blank data if truly no data exists
+        // (migrated data should already be here if migration was done)
         const newData = { score:0, known:{}, sr:{}, completed_courses:[], daily_progress:{},
           quiz_stats:{}, achievements:[], joinDate: todayStr(), createdAt: Date.now() };
         await setOne('users', CU.id, newData);
         CU_DATA = { id: CU.id, ...newData };
+      } else {
+        // ensure required fields exist without overwriting existing data
+        const missing = {};
+        if (!CU_DATA.known) missing.known = {};
+        if (!CU_DATA.sr) missing.sr = {};
+        if (!CU_DATA.completed_courses) missing.completed_courses = [];
+        if (!CU_DATA.daily_progress) missing.daily_progress = {};
+        if (!CU_DATA.quiz_stats) missing.quiz_stats = {};
+        if (!CU_DATA.achievements) missing.achievements = [];
+        if (!CU_DATA.joinDate) missing.joinDate = todayStr();
+        if (Object.keys(missing).length) {
+          await updateOne('users', CU.id, missing);
+          Object.assign(CU_DATA, missing);
+        }
       }
     }
     ALL_CLASSES = await getAll('classes');
@@ -156,6 +174,24 @@ async function selectClass(cid) {
   CURRENT_CLASS = ALL_CLASSES.find(c => c.id===cid);
   if (!CURRENT_CLASS) return;
   await loadAllForClass(cid);
+  // pre-load all other student classes into cache
+  const otherClasses = (CU.classes||[]).filter(c=>c!==cid);
+  await Promise.all(otherClasses.map(async otherId => {
+    if (!CLASS_DATA_CACHE[otherId]) {
+      const [cs, ws, sDoc, pDoc] = await Promise.all([
+        getAll('courses'), getAll('words'),
+        getOne('class_settings', otherId),
+        getOne('daily_plan', otherId+'_'+todayStr())
+      ]);
+      const otherAC = cs.filter(c=>c.classId===otherId).sort((a,b)=>(a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0));
+      const otherAW = ws.filter(w=>otherAC.some(c=>c.id===w.cid)).sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
+      const settings = sDoc ? { newWordsPerDay: sDoc.newWordsPerDay||20, startDate: sDoc.startDate||todayStr(), dailyLimit: sDoc.dailyLimit||20 } : { newWordsPerDay:20, startDate:todayStr(), dailyLimit:20 };
+      settings.todayPlan = pDoc||null;
+      CLASS_DATA_CACHE[otherId] = { AC: otherAC, AW: otherAW, settings };
+    }
+  }));
+  // also cache current class
+  CLASS_DATA_CACHE[cid] = { AC, AW, settings: APP_SETTINGS };
   document.getElementById('stu-name').textContent = CU.name;
   document.getElementById('stu-id').textContent = CU.id;
   document.getElementById('stu-class').textContent = CURRENT_CLASS.level + ' ' + CURRENT_CLASS.grade;
@@ -193,7 +229,7 @@ async function loadAllForClass(cid) {
     getOne('daily_plan', cid + '_' + todayStr())
   ]);
   AC = cs.filter(c => c.classId===cid).sort((a,b) => (a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0));
-  AW = ws.filter(w => AC.some(c=>c.id===w.cid)).sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
+  AW = ws.filter(w => AC.some(c=>c.id===w.cid)).sort((a,b)=>(a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0));
   if (settingsDoc) {
     APP_SETTINGS = { dailyLimit: settingsDoc.dailyLimit||20, newWordsPerDay: settingsDoc.newWordsPerDay||20, startDate: settingsDoc.startDate||todayStr() };
     if (!settingsDoc.startDate) setOne('class_settings', cid, { ...settingsDoc, startDate: todayStr() });
@@ -233,6 +269,20 @@ function getStudentTodayNewWordIds() {
   AC.forEach(c=>AW.filter(w=>w.cid===c.id).forEach(w=>ordered.push(w.id)));
   return ordered.slice(effectiveDayIdx*perDay,(effectiveDayIdx+1)*perDay);
 }
+// ── vocabulary notebook helpers ─────────────────────────────
+function getNotebook() { return new Set(CU_DATA?.notebook||[]); }
+async function addToNotebook(wid) {
+  const nb=new Set(CU_DATA.notebook||[]);
+  if(nb.has(wid)) return;
+  nb.add(wid); CU_DATA.notebook=[...nb];
+  await updateOne('users',CU.id,{notebook:[...nb]});
+}
+async function removeFromNotebook(wid) {
+  const nb=new Set(CU_DATA.notebook||[]);
+  nb.delete(wid); CU_DATA.notebook=[...nb];
+  await updateOne('users',CU.id,{notebook:[...nb]});
+}
+
 function getDailyWords() {
   const today=todayStr(); const sr=CU_DATA?.sr||{};
   const newIds=getStudentTodayNewWordIds();
@@ -248,41 +298,210 @@ function getDailyWords() {
 window.stuTab = function(t, el) {
   document.querySelectorAll('#s-student .tab').forEach(x=>x.classList.remove('active'));
   if(el) el.classList.add('active');
-  ['home','study','quiz','rank','badges'].forEach(n=>document.getElementById('t-'+n).style.display=n===t?'block':'none');
+  ['home','study','quiz','rank','badges','search','notebook'].forEach(n=>document.getElementById('t-'+n).style.display=n===t?'block':'none');
   if(t==='rank') renderRank();
   if(t==='home'){dailyMode=false;refreshHome();}
   if(t==='badges') renderBadges();
+  if(t==='search'){renderStuSearch();setTimeout(()=>document.getElementById('stu-search-input')?.focus(),100);}
+  if(t==='notebook') renderNotebook();
   if(t==='study'){const fb=document.getElementById('forgot-btn');if(fb)fb.style.display=dailyMode?'inline-flex':'none';}
+};
+
+function renderNotebook(){
+  const nb=getNotebook();
+  const countEl=document.getElementById('notebook-count');
+  const list=document.getElementById('notebook-list');
+  if(countEl) countEl.textContent=nb.size+' 個單字';
+  if(!nb.size){
+    list.innerHTML='<div style="text-align:center;padding:32px 0"><div style="font-size:40px;margin-bottom:8px">📖</div><p class="text-muted">複習本是空的</p><p class="text-muted text-sm mt8">背誦時按 📌 或測驗答錯時自動加入</p></div>';
+    return;
+  }
+  list.innerHTML='';
+  // gather all words across all classes
+  const allWords=[];
+  Object.values(CLASS_DATA_CACHE).forEach(cd=>{cd.AW.forEach(w=>{if(!allWords.find(x=>x.id===w.id))allWords.push({...w,_ac:cd.AC});});});
+  AW.forEach(w=>{if(!allWords.find(x=>x.id===w.id))allWords.push({...w,_ac:AC});});
+  const nbWords=allWords.filter(w=>nb.has(w.id));
+  const qs=CU_DATA?.quiz_stats||{};
+  nbWords.forEach(w=>{
+    const wqs=qs[w.id];
+    const acc=wqs&&wqs.attempts?Math.round(wqs.correct/wqs.attempts*100):null;
+    const course=(w._ac||AC).find(c=>c.id===w.cid);
+    const card=document.createElement('div');
+    card.style.cssText='padding:12px 0;border-bottom:1px solid var(--border)';
+    card.innerHTML=`<div class="flex gap8 mb8" style="justify-content:space-between;align-items:flex-start">
+      <div style="flex:1">
+        <div class="flex gap8 mb8">
+          <span class="bold" style="font-size:16px">${w.en}</span>
+          ${w.phonetic?`<span class="text-muted" style="font-size:12px">[${w.phonetic}]</span>`:''}
+          ${w.pos?`<span class="tag tag-a" style="font-size:11px">${w.pos}</span>`:''}
+        </div>
+        <div style="font-size:14px;color:var(--brand-d);margin-bottom:4px">${w.zh}</div>
+        ${w.ex?`<div class="text-muted" style="font-size:12px;line-height:1.5">${w.ex}</div>`:''}
+        <div class="flex gap8 mt8">
+          ${course?`<span class="text-muted" style="font-size:11px">📚 ${course.name}</span>`:''}
+          ${acc!==null?`<span class="text-muted" style="font-size:11px">答題正確率 ${acc}%</span>`:''}
+        </div>
+      </div>
+      <button class="btn btn-sm" onclick="removeFromNotebookUI('${w.id}',this)" style="color:var(--danger);border-color:var(--danger);flex-shrink:0;font-size:12px">移出</button>
+    </div>`;
+    list.appendChild(card);
+  });
+}
+
+window.startNotebookQuiz=function(){
+  const nb=getNotebook();
+  if(!nb.size){alert('複習本是空的！');return;}
+  // gather notebook words
+  const allWords=[];
+  Object.values(CLASS_DATA_CACHE).forEach(cd=>{cd.AW.forEach(w=>{if(!allWords.find(x=>x.id===w.id))allWords.push(w);});});
+  AW.forEach(w=>{if(!allWords.find(x=>x.id===w.id))allWords.push(w);});
+  const nbWords=allWords.filter(w=>nb.has(w.id));
+  if(nbWords.length<2){alert('複習本至少需要 2 個單字才能開始測驗');return;}
+  // use free quiz mode with notebook words
+  QW=shuffle([...nbWords]);QI=0;QS=0;QC=0;window._quizMode='mixed';
+  window._quizSource='notebook'; // mark as notebook quiz
+  // switch to quiz tab and start
+  stuTab('quiz',document.querySelectorAll('#s-student .tab')[2]);
+  document.getElementById('quiz-setup').style.display='none';
+  document.getElementById('quiz-game').style.display='block';
+  document.getElementById('quiz-result').style.display='none';
+  showQ();
+};
+
+window.renderStuSearch=function(){
+  const q=(document.getElementById('stu-search-input')?.value||'').toLowerCase().trim();
+  const results=document.getElementById('stu-search-results');
+  if(!q){results.innerHTML='<p class="text-muted text-sm" style="text-align:center;padding:24px">輸入關鍵字開始搜尋</p>';return;}
+  // search across all classes
+  const allWords=[];
+  Object.values(CLASS_DATA_CACHE).forEach(cd=>{
+    cd.AW.forEach(w=>{
+      if(!allWords.find(x=>x.id===w.id)) allWords.push({...w,_ac:cd.AC});
+    });
+  });
+  // also include current AW
+  AW.forEach(w=>{if(!allWords.find(x=>x.id===w.id))allWords.push({...w,_ac:AC});});
+  const matched=allWords.filter(w=>w.en.toLowerCase().includes(q)||w.zh.includes(q)||(w.ex||'').toLowerCase().includes(q));
+  if(!matched.length){results.innerHTML='<p class="text-muted text-sm" style="text-align:center;padding:24px">找不到符合的單字</p>';return;}
+  const known=CU_DATA?.known||{};const sr=CU_DATA?.sr||{};
+  results.innerHTML='';
+  matched.slice(0,50).forEach(w=>{
+    const course=(w._ac||AC).find(c=>c.id===w.cid);
+    const isKnown=!!known[w.id];
+    const srLv=sr[w.id]?.level;
+    let statusTag='';
+    if(isKnown){
+      if(srLv>=4) statusTag='<span class="tag tag-g" style="font-size:11px">熟練</span>';
+      else if(srLv>=2) statusTag='<span class="tag tag-b" style="font-size:11px">複習中</span>';
+      else statusTag='<span class="tag tag-a" style="font-size:11px">學習中</span>';
+    } else {
+      statusTag='<span class="tag" style="background:#f1f5f9;color:#94a3b8;font-size:11px">未學習</span>';
+    }
+    const card=document.createElement('div');
+    card.style.cssText='padding:12px 0;border-bottom:1px solid var(--border)';
+    // highlight matching text
+    const hiEn=w.en.replace(new RegExp('('+q.replace(/[.*+?^${}()|[\]\]/g,'\$&')+')','gi'),'<mark style="background:var(--wl);border-radius:2px">$1</mark>');
+    const hiZh=w.zh.replace(new RegExp('('+q.replace(/[.*+?^${}()|[\]\]/g,'\$&')+')','gi'),'<mark style="background:var(--wl);border-radius:2px">$1</mark>');
+    card.innerHTML=`<div class="flex gap8 mb8">
+      <div style="flex:1">
+        <span class="bold" style="font-size:16px">${hiEn}</span>
+        ${w.phonetic?`<span class="text-muted" style="font-size:12px"> [${w.phonetic}]</span>`:''}
+        ${w.pos?`<span class="tag tag-a" style="font-size:11px;margin-left:4px">${w.pos}</span>`:''}
+      </div>
+      ${statusTag}
+    </div>
+    <div style="font-size:14px;color:var(--brand-d);margin-bottom:4px">${hiZh}</div>
+    ${w.ex?`<div class="text-muted" style="font-size:12px;line-height:1.5">${w.ex}</div>`:''}
+    ${course?`<div class="text-muted mt8" style="font-size:11px">📚 ${course.name}</div>`:''}`;
+    results.appendChild(card);
+  });
+  if(matched.length>50) results.innerHTML+=`<p class="text-muted text-sm" style="text-align:center;padding:8px">還有 ${matched.length-50} 個結果，請輸入更精確的關鍵字</p>`;
 };
 
 async function refreshHome() {
   const u = CU_DATA; const known=u.known||{};
-  document.getElementById('h-total').textContent=AW.length;
+  // total words across all classes
+  const allClassIds = CU.classes||[];
+  let totalWords=0;
+  allClassIds.forEach(cid=>{
+    const d=CLASS_DATA_CACHE[cid];
+    if(d) totalWords+=d.AW.length;
+  });
+  document.getElementById('h-total').textContent=totalWords||AW.length;
   document.getElementById('h-learned').textContent=Object.keys(known).length;
   document.getElementById('stu-score').textContent=u.score||0;
-  const all=(await getAll('users')).filter(u=>u.role!=='admin');
+  const all=(await getAll('users')).filter(x=>x.role!=='admin');
   all.sort((a,b)=>b.score-a.score);
   const ri=all.findIndex(x=>x.id===CU.id);
   document.getElementById('h-rank').textContent='#'+(ri+1);
-  const today=todayStr(); const dp=u.daily_progress||{};
-  const todayDp=dp[today];
-  if(todayDp?.quizDone){
-    document.getElementById('daily-count').textContent='今日已完成 🎉';
-    document.getElementById('daily-desc').textContent='明天繼續加油！';
-    document.getElementById('daily-start-btn').textContent='查看結果';
-  } else {
-    const daily=getDailyWords(); const sr=u.sr||{};
-    const reviewCount=daily.filter(w=>sr[w.id]).length;
-    const newCount=daily.length-reviewCount;
-    const doneCount=todayDp?.doneIds?.length||0;
-    document.getElementById('daily-count').textContent=daily.length>0?daily.length+' 個單字':'今日已完成 🎉';
-    document.getElementById('daily-start-btn').textContent=doneCount>0||todayDp?.studyDone?'繼續 →':'開始 →';
-    if(todayDp?.studyDone) document.getElementById('daily-desc').textContent='背誦完成，測驗待完成';
-    else if(doneCount>0) document.getElementById('daily-desc').textContent=`繼續上次進度（已背 ${doneCount}/${daily.length}）`;
-    else document.getElementById('daily-desc').textContent='新單字 '+newCount+' 個・複習 '+reviewCount+' 個';
-  }
+  // render per-class daily tasks
+  renderMultiClassTasks();
   renderCL(); renderMissedTasks();
 }
+
+function renderMultiClassTasks() {
+  const u=CU_DATA; const today=todayStr(); const dp=u.daily_progress||{};
+  const allClassIds=CU.classes||[];
+  const container=document.getElementById('daily-tasks-container');
+  container.innerHTML='';
+  if(allClassIds.length===0){
+    container.innerHTML='<div class="card mb12" style="color:var(--muted);text-align:center;padding:16px">尚未加入任何班級</div>';
+    return;
+  }
+  allClassIds.forEach(cid=>{
+    const cls=ALL_CLASSES.find(c=>c.id===cid);
+    const classData=CLASS_DATA_CACHE[cid];
+    if(!cls||!classData) return;
+    const classLabel=cls.level+' '+cls.grade;
+    // compute daily words for this class
+    const prevAC=AC, prevAW=AW, prevSettings=APP_SETTINGS;
+    AC=classData.AC; AW=classData.AW; APP_SETTINGS=classData.settings;
+    const daily=getDailyWords();
+    const taskKey=cid+'_'+today;
+    const todayDp=dp[taskKey]||dp[today]; // support both key formats
+    const sr=u.sr||{};
+    AC=prevAC; AW=prevAW; APP_SETTINGS=prevSettings;
+    let statusHTML='', btnText='開始 →', btnAction=`startDailyForClass('${cid}')`;
+    if(todayDp?.quizDone){
+      statusHTML=`<div style="font-size:11px;opacity:0.75;margin-top:2px">今日已完成 🎉 · ${todayDp.finalPct||0}%</div>`;
+      btnText='已完成 ✓';
+      btnAction='';
+    } else if(daily.length===0){
+      statusHTML='<div style="font-size:11px;opacity:0.75;margin-top:2px">今日無新任務</div>';
+      btnText=''; btnAction='';
+    } else {
+      const doneCount=todayDp?.doneIds?.length||0;
+      const reviewCount=daily.filter(w=>sr[w.id]).length;
+      const newCount=daily.length-reviewCount;
+      if(todayDp?.studyDone) statusHTML='<div style="font-size:11px;opacity:0.75;margin-top:2px">背誦完成，測驗待完成</div>';
+      else if(doneCount>0) statusHTML=`<div style="font-size:11px;opacity:0.75;margin-top:2px">繼續進度（${doneCount}/${daily.length}）</div>`;
+      else statusHTML=`<div style="font-size:11px;opacity:0.75;margin-top:2px">新單字 ${newCount} 個・複習 ${reviewCount} 個</div>`;
+      btnText=doneCount>0||todayDp?.studyDone?'繼續 →':'開始 →';
+    }
+    const isDone=todayDp?.quizDone;
+    const card=document.createElement('div');
+    card.style.cssText=`background:${isDone?'linear-gradient(135deg,#16a34a,#15803d)':'linear-gradient(135deg,#2563eb,#1e40af)'};color:#fff;border:none;border-radius:10px;padding:14px 16px;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between`;
+    card.innerHTML=`<div>
+      <div style="font-size:11px;opacity:0.8;margin-bottom:2px">📅 ${classLabel}</div>
+      <div style="font-size:18px;font-weight:700">${daily.length>0?daily.length+' 個單字':isDone?'已完成':'無任務'}</div>
+      ${statusHTML}
+    </div>
+    ${btnAction?`<button onclick="${btnAction}" style="padding:8px 14px;border-radius:8px;border:none;background:rgba(255,255,255,0.2);color:#fff;cursor:pointer;font-size:13px;font-weight:600;white-space:nowrap">${btnText}</button>`:`<span style="font-size:20px">${isDone?'✅':'—'}</span>`}`;
+    container.appendChild(card);
+  });
+}
+
+window.startDailyForClass=function(cid){
+  // switch active class and start daily
+  const classData=CLASS_DATA_CACHE[cid];
+  if(!classData) return;
+  CURRENT_CLASS=ALL_CLASSES.find(c=>c.id===cid);
+  AC=classData.AC; AW=classData.AW; APP_SETTINGS=classData.settings;
+  CLASS_DATA_CACHE[cid]={AC,AW,settings:APP_SETTINGS};
+  window.currentTaskClassId=cid; // track which class this task belongs to
+  startDaily();
+};
 
 function renderCL() {
   const u=CU_DATA; const known=u.known||{}; const comp=u.completed_courses||[];
@@ -353,11 +572,32 @@ async function showSC(){
   document.getElementById('study-ex').textContent=w.ex||'';
   document.getElementById('study-progress').textContent=(SI+1)+'/'+SW.length;
   document.getElementById('study-bar').style.width=Math.round((SI+1)/SW.length*100)+'%';
+  // update notebook button state
+  const nbBtn=document.getElementById('notebook-btn');
+  if(nbBtn){
+    const inNb=getNotebook().has(w.id);
+    nbBtn.textContent=inNb?'📌 已在複習本':'📌 加入複習本';
+    nbBtn.style.background=inNb?'var(--wl)':'';
+    nbBtn.style.color=inNb?'var(--warn)':'';
+    nbBtn.style.borderColor=inNb?'var(--warn)':'';
+  }
   const imgEl=document.getElementById('study-img');
   imgEl.style.display='none'; imgEl.src='';
   const url=await fetchWordImage(w.en);
   if(url){imgEl.src=url;imgEl.style.display='block';}
 }
+
+window.toggleNotebook=async function(){
+  const w=SW[SI]; if(!w) return;
+  const nb=getNotebook();
+  if(nb.has(w.id)){
+    await removeFromNotebook(w.id);
+    showSC();
+  } else {
+    await addToNotebook(w.id);
+    showSC();
+  }
+};
 window.flipCard=function(){document.getElementById('flip-card').classList.toggle('flipped');};
 window.studyNav=function(d){
   const next=SI+d;
@@ -430,7 +670,7 @@ window.startDaily=function(){
     _enterStudyTabWithQuiz();
     startDailyQuizFromWords(shuffle([...SW]),SW.length); return;
   }
-  dailyPhase='study'; window._dailyForgot=new Set(); wrongWords=[]; dailyRetryCount=0;
+  dailyPhase='study'; window._dailyForgot=new Set(); wrongWords=[]; dailyRetryCount=0; dailyCorrectIds=[];
   if(!dp[today]){
     dp[today]={total:SW.length,done:0,doneIds:[],quizDone:false,studyDone:false,quizStarted:false};
     u.daily_progress=dp; updateOne('users',CU.id,{daily_progress:dp});
@@ -545,7 +785,13 @@ async function recordDailyAnswer(wid,correct){
   if(!qs[wid])qs[wid]={attempts:0,correct:0};
   qs[wid].attempts++;if(correct)qs[wid].correct++;
   u.quiz_stats=qs;
-  if(!correct&&!wrongWords.includes(wid))wrongWords.push(wid);
+  if(!correct){
+    if(!wrongWords.includes(wid))wrongWords.push(wid);
+    // auto-add wrong answer to notebook
+    await addToNotebook(wid);
+  } else {
+    if(!dailyCorrectIds.includes(wid)) dailyCorrectIds.push(wid);
+  }
   if(correct){u.score=(u.score||0)+10;document.getElementById('stu-score').textContent=u.score;}
   const targetDate=makeupDate||todayStr(); const dp={...(u.daily_progress||{})};
   if(dp[targetDate]){
@@ -598,8 +844,41 @@ async function finishDailyTask(){
   const retryNote=dailyRetryCount>0?`<div class="text-muted" style="font-size:12px">（共重試 ${dailyRetryCount} 次）</div>`:'';
   const newBadges=checkAchievements(u);
   document.getElementById('t-study').innerHTML=`<div style="padding:24px 4px"><div style="text-align:center;margin-bottom:16px"><div style="font-size:52px;margin-bottom:8px">${emoji}</div><h2 style="margin-bottom:4px">${pct===100?'完美！':pct>=95?'太棒了！':'通過了！'}</h2>${retryNote}<div class="text-muted mt8" style="font-size:13px">${makeupDate?'補做任務完成 ✓':'今日任務完成 ✓'}</div></div><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px"><div class="stat-card"><div class="stat-label">總題數</div><div class="stat-num">${totalWords}</div></div><div class="stat-card"><div class="stat-label">最終正確率</div><div class="stat-num" style="color:var(--success)">${pct}%</div></div><div class="stat-card"><div class="stat-label">獲得積分</div><div class="stat-num" style="color:var(--brand)">+${dailyQS+scoreBonus}</div></div></div>${newBadges.length?`<div style="background:var(--wl);border-radius:8px;padding:10px 12px;margin-bottom:12px"><div class="bold text-sm mb8" style="color:var(--warn)">🏅 獲得新成就！</div>${newBadges.map(b=>`<div style="font-size:13px;margin-bottom:4px">${b.icon} ${b.name} — ${b.desc}</div>`).join('')}</div>`:''}<button class="btn btn-p" style="width:100%" onclick="stuTab('home', document.querySelector('#s-student .tab'))">回主頁</button></div>`;
+  // check notebook words answered correctly → suggest removal
+  const nb=getNotebook();
+  const removable=dailyCorrectIds.filter(wid=>nb.has(wid));
+  const removableWords=removable.map(wid=>AW.find(w=>w.id===wid)).filter(Boolean);
+
+  if(removableWords.length){
+    // append suggestion section to result page
+    const studyTab=document.getElementById('t-study');
+    const suggestDiv=document.createElement('div');
+    suggestDiv.style.cssText='padding:0 4px 16px';
+    suggestDiv.innerHTML=`
+      <div style="background:var(--sl);border-radius:8px;padding:14px;margin-bottom:12px">
+        <div class="bold text-sm mb8" style="color:var(--success)">🎉 複習本好消息！</div>
+        <div class="text-muted mb12" style="font-size:13px">以下複習本單字你這次都答對了，可以考慮移出：</div>
+        ${removableWords.map(w=>`
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 8px;background:#fff;border-radius:6px;margin-bottom:6px">
+            <div><span class="bold text-sm">${w.en}</span> <span class="text-muted" style="font-size:12px">${w.zh}</span></div>
+            <button class="btn btn-sm" onclick="removeFromNotebookUI('${w.id}',this)" style="color:var(--success);border-color:var(--success);font-size:12px">移出 ✓</button>
+          </div>`).join('')}
+        <button class="btn" style="width:100%;margin-top:8px;font-size:13px" onclick="removeAllSuggested(${JSON.stringify(removable)},this)">全部移出複習本</button>
+      </div>`;
+    studyTab.appendChild(suggestDiv);
+  }
   dailyMode=false; makeupDate=null;
 }
+window.removeFromNotebookUI=async function(wid,btn){
+  await removeFromNotebook(wid);
+  const row=btn.closest('div[style*="display:flex"]');
+  if(row){row.style.opacity='0.4';btn.textContent='已移出';btn.disabled=true;}
+};
+window.removeAllSuggested=async function(wids,btn){
+  await Promise.all(wids.map(wid=>removeFromNotebook(wid)));
+  btn.textContent='✓ 已全部移出';btn.disabled=true;btn.style.background='var(--sl)';btn.style.color='var(--success)';
+  btn.closest('div[style*=background]').querySelectorAll('button[onclick*=removeFromNotebookUI]').forEach(b=>{b.textContent='已移出';b.disabled=true;});
+};
 window.retryDailyQuiz=function(){
   dailyQuizWords=shuffle([...SW]);dailyQI=0;dailyQS=0;dailyQC=0;wrongWords=[];
   const targetDate=makeupDate||todayStr();const dp={...(CU_DATA.daily_progress||{})};
@@ -652,6 +931,7 @@ window.submitFill=function(){
   const input=document.getElementById('fill-input');if(!input||input.disabled)return;
   const ans=input.value.trim();if(!ans)return;
   const w=QW[QI];const correct=ans.toLowerCase()===w.en.toLowerCase();
+  if(QW[QI]) QW[QI]._correct=correct; // track for notebook suggestion
   input.disabled=true;document.querySelectorAll('#q-options button').forEach(b=>b.disabled=true);
   const res=document.getElementById('fill-result');res.style.display='block';
   if(correct){input.style.borderColor='var(--success)';input.style.background='var(--sl)';res.style.color='var(--success)';res.innerHTML='✓ 正確！';updateScore(w.id,true);}
@@ -663,11 +943,16 @@ async function updateScore(wid,correct=true){
   if(!qs[wid])qs[wid]={attempts:0,correct:0};
   qs[wid].attempts++;if(correct)qs[wid].correct++;
   u.quiz_stats=qs;
+  if(!correct){
+    // auto-add to notebook if not already
+    await addToNotebook(wid);
+  }
   if(correct){QS+=10;QC++;u.score=(u.score||0)+10;const known={...(u.known||{})};known[wid]=true;u.known=known;await updateOne('users',CU.id,{score:u.score,known,quiz_stats:qs});document.getElementById('stu-score').textContent=u.score;}
   else{await updateOne('users',CU.id,{quiz_stats:qs});}
 }
 async function answerMC(btn,correct,wid){
   document.querySelectorAll('.quiz-opt').forEach(b=>b.onclick=null);
+  if(QW[QI]) QW[QI]._correct=correct; // track for notebook suggestion
   if(correct){btn.classList.add('correct');await updateScore(wid,true);}
   else{btn.classList.add('wrong');const cz=AW.find(w=>w.id===wid)?.zh;document.querySelectorAll('.quiz-opt').forEach(b=>{if(b.textContent===cz)b.classList.add('correct');});await updateScore(wid,false);}
   document.getElementById('q-next-btn').style.display='block';
@@ -682,22 +967,67 @@ function showResult(){
   document.getElementById('r-emoji').textContent=pct>=80?'🎉':pct>=50?'👍':'📖';
   document.getElementById('r-title').textContent=pct>=80?'太棒了！':pct>=50?'不錯喔！':'繼續努力！';
   document.getElementById('r-subtitle').textContent='正確率 '+pct+'%，共獲得 '+QS+' 積分';
+  // if notebook quiz, show removable suggestions
+  if(window._quizSource==='notebook'){
+    const nb=getNotebook();
+    const allWords=[];
+    Object.values(CLASS_DATA_CACHE).forEach(cd=>{cd.AW.forEach(w=>{if(!allWords.find(x=>x.id===w.id))allWords.push(w);});});
+    AW.forEach(w=>{if(!allWords.find(x=>x.id===w.id))allWords.push(w);});
+    // find notebook words that were answered correctly in this quiz
+    const correctInQuiz=QW.filter((_,i)=>QW[i]._correct).map(w=>w.id).filter(wid=>nb.has(wid));
+    if(correctInQuiz.length){
+      const container=document.getElementById('quiz-result');
+      const suggestDiv=document.createElement('div');
+      suggestDiv.style.cssText='margin-top:12px;text-align:left';
+      const removableWords=correctInQuiz.map(wid=>allWords.find(w=>w.id===wid)).filter(Boolean);
+      suggestDiv.innerHTML=`<div style="background:var(--sl);border-radius:8px;padding:14px">
+        <div class="bold text-sm mb8" style="color:var(--success)">🎉 這些複習本單字你答對了！</div>
+        ${removableWords.map(w=>`<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 8px;background:#fff;border-radius:6px;margin-bottom:5px">
+          <span class="bold text-sm">${w.en}</span><span class="text-muted text-sm">${w.zh}</span>
+          <button class="btn btn-sm" onclick="removeFromNotebookUI('${w.id}',this)" style="color:var(--success);border-color:var(--success);font-size:12px">移出</button>
+        </div>`).join('')}
+        <button class="btn mt8" style="width:100%;font-size:13px" onclick="removeAllSuggested(${JSON.stringify(correctInQuiz)},this)">全部移出複習本</button>
+      </div>`;
+      container.appendChild(suggestDiv);
+    }
+    window._quizSource=null;
+  }
 }
 window.resetQuiz=function(){document.getElementById('quiz-setup').style.display='block';document.getElementById('quiz-game').style.display='none';document.getElementById('quiz-result').style.display='none';};
 
 // ── rank ──────────────────────────────────────────────────────
+let rankMode = 'class'; // 'class' | 'school'
 async function renderRank(){
-  const list=document.getElementById('rank-list');list.innerHTML='<div class="loading">載入中...</div>';
-  const all=(await getAll('users')).filter(u=>u.role!=='admin');all.sort((a,b)=>b.score-a.score);
+  const list=document.getElementById('rank-list');
+  list.innerHTML='<div class="loading">載入中...</div>';
+  let allUsers=(await getAll('users')).filter(u=>u.role!=='admin');
+  // filter by class if class mode
+  if(rankMode==='class'){
+    const myClasses=new Set(CU.classes||[]);
+    // find classmates: students who share at least one class with me
+    const accounts=await getAll('accounts');
+    const classmates=new Set();
+    accounts.forEach(a=>{
+      if(a.role==='student'&&(a.classes||[]).some(c=>myClasses.has(c))) classmates.add(a.id);
+    });
+    allUsers=allUsers.filter(u=>classmates.has(u.id));
+  }
+  allUsers.sort((a,b)=>b.score-a.score);
   list.innerHTML='';
-  if(!all.length){list.innerHTML='<p class="text-muted text-sm" style="padding:8px">暫無排名資料</p>';return;}
-  all.forEach((u,i)=>{
+  if(!allUsers.length){list.innerHTML='<p class="text-muted text-sm" style="padding:8px">暫無排名資料</p>';return;}
+  allUsers.forEach((u,i)=>{
     const isMe=u.id===CU.id;const medal=i===0?'🥇':i===1?'🥈':i===2?'🥉':'';
     const row=document.createElement('div');row.className='rank-row';
     row.innerHTML=`<div style="width:28px;text-align:center;font-size:15px">${medal||'<span style="font-size:13px;color:var(--muted)">#'+(i+1)+'</span>'}</div><div class="avatar" style="${isMe?'background:var(--brand);color:#fff':''}">${(u.name||u.id)[0]}</div><div style="flex:1"><div class="bold text-sm">${u.name||u.id}${isMe?' <span style="color:var(--brand)">(我)</span>':''}</div><div class="text-muted" style="font-size:12px">已學 ${Object.keys(u.known||{}).length} 個・完成 ${(u.completed_courses||[]).length} 課</div></div><div class="bold" style="color:var(--brand);font-size:16px">${u.score||0} 分</div>`;
     list.appendChild(row);
   });
 }
+window.switchRankMode=function(mode,btn){
+  rankMode=mode;
+  document.querySelectorAll('.rank-mode-btn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  renderRank();
+};
 
 // ── achievements ──────────────────────────────────────────────
 const ACHIEVEMENTS=[
@@ -748,7 +1078,14 @@ window.adminTab=function(t,el){
   if(t==='words'){renderWords();updateFC();}
   if(t==='courses')renderAdminCourses();
   if(t==='import')updateIC();
-  if(t==='students')renderStudentList();
+  if(t==='students'){
+    // set default date range to last 7 days
+    const toEl=document.getElementById('filter-date-to');
+    const fromEl=document.getElementById('filter-date-from');
+    if(toEl&&!toEl.value) toEl.value=todayStr();
+    if(fromEl&&!fromEl.value){const d=new Date();d.setDate(d.getDate()-6);fromEl.value=d.toISOString().slice(0,10);}
+    renderStudentList();
+  }
   if(t==='settings')loadSettings();
 };
 
@@ -795,6 +1132,7 @@ async function renderAccountList(){
         <div class="flex gap8"><span class="bold text-sm">${s.id}</span><span class="text-muted text-sm">${s.name||'（無名稱）'}</span></div>
         <div class="text-muted" style="font-size:12px">班級：${classes||'未指派'}</div>
       </div>
+      <button class="btn btn-sm" onclick="manageStudentClass('${s.id}')">班級</button>
       <button class="btn btn-sm" onclick="resetPassword('${s.id}')">重設密碼</button>
       <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deleteAccount('${s.id}')">刪除</button>`;
       tableDiv.appendChild(row);
@@ -826,14 +1164,32 @@ window.createStudent=async function(){
     if(migrateFrom){
       const oldData=await getOne('users',migrateFrom);
       if(oldData){
-        const{id:_,role:_r,...rest}=oldData;
-        // remove undefined fields before writing to Firebase
-        const cleanData={...rest,joinDate:rest.joinDate||todayStr()};
-        Object.keys(cleanData).forEach(k=>{if(cleanData[k]===undefined)delete cleanData[k];});
+        // strip any fields that would cause Firebase errors
+        const cleanData={};
+        const allowedFields=['score','known','sr','completed_courses','daily_progress','quiz_stats','achievements','notebook','joinDate','createdAt'];
+        allowedFields.forEach(k=>{
+          if(oldData[k]!==undefined&&oldData[k]!==null) cleanData[k]=oldData[k];
+        });
+        if(!cleanData.joinDate) cleanData.joinDate=todayStr();
+        if(!cleanData.createdAt) cleanData.createdAt=Date.now();
+        if(!cleanData.score) cleanData.score=0;
+        if(!cleanData.known) cleanData.known={};
+        if(!cleanData.sr) cleanData.sr={};
+        if(!cleanData.completed_courses) cleanData.completed_courses=[];
+        if(!cleanData.daily_progress) cleanData.daily_progress={};
+        if(!cleanData.quiz_stats) cleanData.quiz_stats={};
+        if(!cleanData.achievements) cleanData.achievements=[];
         await setOne('users',id,cleanData);
-        msg.style.color='var(--success)';msg.textContent=`✓ 帳號 ${id} 建立完成，已遷移「${migrateFrom}」的資料！`;
+        // verify write succeeded
+        const verify=await getOne('users',id);
+        if(verify&&Object.keys(verify.known||{}).length===Object.keys(cleanData.known||{}).length){
+          const learnedCount=Object.keys(cleanData.known||{}).length;
+          msg.style.color='var(--success)';msg.textContent=`✓ 帳號 ${id} 建立完成，已遷移「${migrateFrom}」的資料！（已學 ${learnedCount} 個單字、積分 ${cleanData.score||0}）`;
+        } else {
+          msg.style.color='var(--warn)';msg.textContent=`⚠️ 帳號 ${id} 建立完成，但資料遷移可能有問題，請檢查`;
+        }
       } else {
-        msg.style.color='var(--warn)';msg.textContent=`✓ 帳號 ${id} 建立完成（找不到「${migrateFrom}」的舊資料）`;
+        msg.style.color='var(--warn)';msg.textContent=`✓ 帳號 ${id} 建立完成（找不到「${migrateFrom}」的舊資料，建立空白帳號）`;
       }
     } else {
       msg.style.color='var(--success)';msg.textContent=`✓ 帳號 ${id} 建立完成！密碼：123`;
@@ -862,6 +1218,58 @@ window.resetPassword=async function(id){
   if(!confirm(`確定將 ${id} 的密碼重設為 123？`))return;
   await updateOne('accounts',id,{password:'123'});
   alert(`✓ ${id} 密碼已重設為 123`);
+};
+
+window.manageStudentClass=async function(id){
+  const account=await getOne('accounts',id);
+  if(!account){alert('找不到帳號');return;}
+  const currentClasses=account.classes||[];
+  const allClassOptions=[];
+  Object.entries(CLASS_STRUCTURE).forEach(([level,grades])=>{
+    grades.forEach(grade=>allClassOptions.push(level+'-'+grade));
+  });
+  const checkboxes=allClassOptions.map(cid=>{
+    const cls=cid.split('-');
+    return `<label style="display:flex;align-items:center;gap:6px;padding:4px 0;font-size:13px;cursor:pointer">
+      <input type="checkbox" data-cid="${cid}" ${currentClasses.includes(cid)?'checked':''} style="accent-color:var(--brand);width:16px;height:16px"/>
+      ${cls[0]} ${cls[1]}
+    </label>`;
+  }).join('');
+  // create modal
+  const modal=document.createElement('div');
+  modal.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px;width:100%;max-width:360px;max-height:80vh;overflow-y:auto">
+    <div class="bold mb12">管理 ${account.name||id} 的班級</div>
+    <div>${checkboxes}</div>
+    <div class="flex gap8 mt12">
+      <button class="btn btn-p" style="flex:1" onclick="saveStudentClasses('${id}',this)">儲存</button>
+      <button class="btn" style="flex:1" onclick="this.closest('[style*=fixed]').remove()">取消</button>
+    </div>
+    <div id="class-save-msg" style="margin-top:8px;font-size:13px"></div>
+  </div>`;
+  document.body.appendChild(modal);
+};
+
+window.saveStudentClasses=async function(id,btn){
+  const modal=btn.closest('[style*=fixed]');
+  const checked=[...modal.querySelectorAll('input[type=checkbox]:checked')];
+  const newClasses=checked.map(c=>c.dataset.cid);
+  const msg=modal.querySelector('#class-save-msg');
+  msg.style.color='var(--muted)';msg.textContent='儲存中...';
+  try{
+    await updateOne('accounts',id,{classes:newClasses});
+    // ensure class docs exist
+    await Promise.all(newClasses.map(async cid=>{
+      const exists=ALL_CLASSES.find(c=>c.id===cid);
+      if(!exists){
+        const[level,grade]=cid.split('-');
+        await setOne('classes',cid,{id:cid,level,grade,createdAt:Date.now()});
+        ALL_CLASSES.push({id:cid,level,grade});
+      }
+    }));
+    msg.style.color='var(--success)';msg.textContent='✓ 已儲存！';
+    setTimeout(()=>{modal.remove();renderAccountList();},800);
+  }catch(e){msg.style.color='var(--danger)';msg.textContent='失敗：'+e.message;}
 };
 
 window.deleteAccount=async function(id){
@@ -984,6 +1392,7 @@ window.renderWords=function(){
     const row=document.createElement('div');row.style.cssText='display:flex;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid var(--border)';
     row.innerHTML=`<input type="checkbox" class="word-cb" data-id="${w.id}" style="width:16px;height:16px;flex-shrink:0;cursor:pointer;accent-color:var(--brand)" onchange="updateBatchBar()"/>
       <div style="flex:1"><div class="flex gap8"><span class="bold text-sm">${w.en}</span><span class="tag tag-a" style="font-size:11px">${w.pos||''}</span></div><div class="text-muted" style="font-size:12px">${w.zh}${c?' · '+c.name:''}</div></div>
+      <button class="btn btn-sm" style="flex-shrink:0" onclick="editWord('${w.id}')">編輯</button>
       <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger);flex-shrink:0" onclick="deleteWord('${w.id}')">刪除</button>`;
     list.appendChild(row);
   });
@@ -1000,6 +1409,46 @@ window.updateBatchBar=function(){
 };
 window.toggleSelectAll=function(cb){document.querySelectorAll('.word-cb').forEach(c=>c.checked=cb.checked);updateBatchBar();};
 window.deleteWord=async function(id){if(!confirm('確定刪除此單字？'))return;await delOne('words',id);AW=AW.filter(w=>w.id!==id);window.renderWords();};
+
+window.editWord=function(id){
+  const w=AW.find(x=>x.id===id); if(!w) return;
+  const modal=document.createElement('div');
+  modal.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:999;display:flex;align-items:center;justify-content:center;padding:16px;overflow-y:auto';
+  modal.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px;width:100%;max-width:400px">
+    <div class="bold mb12">✏️ 編輯單字</div>
+    <label>英文</label><input id="edit-en" value="${w.en||''}" class="mb8"/>
+    <label>中文</label><input id="edit-zh" value="${w.zh||''}" class="mb8"/>
+    <label>詞性</label><input id="edit-pos" value="${w.pos||''}" placeholder="例：n. / vt. / adj." class="mb8"/>
+    <label>例句</label><textarea id="edit-ex" rows="2" style="margin-bottom:10px">${w.ex||''}</textarea>
+    <label>音標（選填）</label><input id="edit-phonetic" value="${w.phonetic||''}" placeholder="例：ˈæpl" class="mb8"/>
+    <div class="flex gap8 mt8">
+      <button class="btn btn-p" style="flex:1" onclick="saveEditWord('${id}',this)">儲存</button>
+      <button class="btn" style="flex:1" onclick="this.closest('[style*=fixed]').remove()">取消</button>
+    </div>
+    <div id="edit-word-msg" style="margin-top:8px;font-size:13px"></div>
+  </div>`;
+  document.body.appendChild(modal);
+};
+
+window.saveEditWord=async function(id,btn){
+  const modal=btn.closest('[style*=fixed]');
+  const en=modal.querySelector('#edit-en').value.trim();
+  const zh=modal.querySelector('#edit-zh').value.trim();
+  const pos=modal.querySelector('#edit-pos').value.trim();
+  const ex=modal.querySelector('#edit-ex').value.trim();
+  const phonetic=modal.querySelector('#edit-phonetic').value.trim();
+  const msg=modal.querySelector('#edit-word-msg');
+  if(!en||!zh){msg.style.color='var(--danger)';msg.textContent='英文和中文為必填';return;}
+  msg.style.color='var(--muted)';msg.textContent='儲存中...';
+  try{
+    const updated={en,zh,pos,ex,phonetic};
+    await updateOne('words',id,updated);
+    const w=AW.find(x=>x.id===id);
+    if(w) Object.assign(w,updated);
+    msg.style.color='var(--success)';msg.textContent='✓ 已儲存！';
+    setTimeout(()=>{modal.remove();window.renderWords();},600);
+  }catch(e){msg.style.color='var(--danger)';msg.textContent='失敗：'+e.message;}
+};
 window.deleteSelected=async function(){
   const checked=[...document.querySelectorAll('.word-cb:checked')];
   if(!checked.length)return;
@@ -1050,12 +1499,12 @@ async function renderAdminCourses(){
   const classLabel=document.getElementById('at-class-label');
   if(classLabel&&CURRENT_CLASS)classLabel.textContent=CURRENT_CLASS.level+' '+CURRENT_CLASS.grade;
   if(!AC.length){list.innerHTML='<p class="text-muted text-sm" style="padding:8px">尚無課程</p>';return;}
-  const hint=document.createElement('p');hint.className='text-muted text-sm mb8';hint.innerHTML='☰ 拖曳左側圖示可調整順序';list.appendChild(hint);
+  const hint=document.createElement('p');hint.className='text-muted text-sm mb8';hint.innerHTML='☰ 拖曳左側圖示可調整課程順序・點「排序單字」可調整課程內單字順序';list.appendChild(hint);
   let dragSrc=null;
   AC.forEach((c)=>{
     const ws=AW.filter(w=>w.cid===c.id);
     const row=document.createElement('div');row.className='course-row';row.draggable=true;row.dataset.id=c.id;
-    row.innerHTML=`<div style="padding:0 8px 0 2px;cursor:grab;color:var(--muted);font-size:18px;user-select:none" title="拖曳排序">☰</div><div style="flex:1"><div class="bold text-sm">${c.name}</div><div class="text-muted" style="font-size:12px">${ws.length} 個單字</div></div><button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deleteCourse('${c.id}')">刪除</button>`;
+    row.innerHTML=`<div style="padding:0 8px 0 2px;cursor:grab;color:var(--muted);font-size:18px;user-select:none" title="拖曳排序">☰</div><div style="flex:1"><div class="bold text-sm">${c.name}</div><div class="text-muted" style="font-size:12px">${ws.length} 個單字</div></div><button class="btn btn-sm" style="flex-shrink:0" onclick="openWordSort('${c.id}')">排序單字</button><button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger);flex-shrink:0" onclick="deleteCourse('${c.id}')">刪除</button>`;
     row.addEventListener('dragstart',e=>{dragSrc=row;e.dataTransfer.effectAllowed='move';row.style.opacity='0.4';});
     row.addEventListener('dragend',()=>{row.style.opacity='1';list.querySelectorAll('.course-row').forEach(r=>r.style.borderTop='');});
     row.addEventListener('dragover',e=>{e.preventDefault();list.querySelectorAll('.course-row').forEach(r=>r.style.borderTop='');if(row!==dragSrc)row.style.borderTop='2px solid var(--brand)';});
@@ -1064,6 +1513,64 @@ async function renderAdminCourses(){
     list.appendChild(row);
   });
 }
+
+window.openWordSort=function(cid){
+  const course=AC.find(c=>c.id===cid); if(!course) return;
+  let words=AW.filter(w=>w.cid===cid).sort((a,b)=>(a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0));
+  const modal=document.createElement('div');
+  modal.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px;width:100%;max-width:420px;max-height:85vh;display:flex;flex-direction:column">
+    <div class="flex gap8 mb12" style="justify-content:space-between;align-items:center">
+      <div class="bold">📋 ${course.name} 單字排序</div>
+      <span class="text-muted text-sm">☰ 拖曳排序</span>
+    </div>
+    <div id="word-sort-list" style="overflow-y:auto;flex:1;border:1px solid var(--border);border-radius:8px;padding:4px"></div>
+    <div class="flex gap8 mt12">
+      <button class="btn btn-p" style="flex:1" onclick="saveWordSort('${cid}',this)">儲存順序</button>
+      <button class="btn" style="flex:1" onclick="this.closest('[style*=fixed]').remove()">取消</button>
+    </div>
+    <div id="word-sort-msg" style="margin-top:8px;font-size:13px"></div>
+  </div>`;
+  document.body.appendChild(modal);
+  // populate sortable list
+  const sortList=modal.querySelector('#word-sort-list');
+  let wDragSrc=null;
+  words.forEach(w=>{
+    const item=document.createElement('div');
+    item.style.cssText='display:flex;align-items:center;gap:8px;padding:8px;border-bottom:1px solid var(--border);cursor:default;background:#fff;border-radius:4px';
+    item.dataset.id=w.id;item.draggable=true;
+    item.innerHTML=`<div style="cursor:grab;color:var(--muted);font-size:16px;user-select:none;flex-shrink:0">☰</div>
+      <div style="flex:1"><div class="bold text-sm">${w.en}</div><div class="text-muted" style="font-size:12px">${w.zh}</div></div>
+      <span class="tag tag-a" style="font-size:11px;flex-shrink:0">${w.pos||''}</span>`;
+    item.addEventListener('dragstart',e=>{wDragSrc=item;e.dataTransfer.effectAllowed='move';item.style.opacity='0.4';});
+    item.addEventListener('dragend',()=>{item.style.opacity='1';sortList.querySelectorAll('div[draggable]').forEach(r=>r.style.borderTop='');});
+    item.addEventListener('dragover',e=>{e.preventDefault();sortList.querySelectorAll('div[draggable]').forEach(r=>r.style.borderTop='');if(item!==wDragSrc)item.style.borderTop='2px solid var(--brand)';});
+    item.addEventListener('dragleave',()=>{item.style.borderTop='';});
+    item.addEventListener('drop',e=>{e.preventDefault();item.style.borderTop='';if(!wDragSrc||wDragSrc===item)return;const parent=sortList;const items=[...parent.children];const srcIdx=items.indexOf(wDragSrc);const dstIdx=items.indexOf(item);parent.insertBefore(wDragSrc,dstIdx>srcIdx?item.nextSibling:item);});
+    sortList.appendChild(item);
+  });
+};
+
+window.saveWordSort=async function(cid,btn){
+  const modal=btn.closest('[style*=fixed]');
+  const items=[...modal.querySelectorAll('#word-sort-list div[draggable]')];
+  const msg=modal.querySelector('#word-sort-msg');
+  msg.style.color='var(--muted)';msg.textContent='儲存中...';
+  try{
+    await Promise.all(items.map((item,i)=>{
+      const w=AW.find(x=>x.id===item.dataset.id);
+      if(w) w.sortOrder=i;
+      return updateOne('words',item.dataset.id,{sortOrder:i});
+    }));
+    // re-sort AW for this course
+    AW.sort((a,b)=>{
+      if(a.cid!==b.cid) return 0;
+      return (a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0);
+    });
+    msg.style.color='var(--success)';msg.textContent='✓ 順序已儲存！';
+    setTimeout(()=>modal.remove(),800);
+  }catch(e){msg.style.color='var(--danger)';msg.textContent='失敗：'+e.message;}
+};
 window.deleteCourse=async function(id){
   if(!confirm('刪除課程將同時刪除所有相關單字，確定繼續？'))return;
   const ws=AW.filter(w=>w.cid===id);
@@ -1079,18 +1586,89 @@ window.showStudentList=function(){
   document.getElementById('student-list-view').style.display='block';
   document.getElementById('student-detail-view').style.display='none';
 };
+window.exportGrades=async function(){
+  const days=parseInt(prompt('匯出近幾天的每日任務記錄？（預設14天）','14')||'14');
+  if(isNaN(days)||days<1){alert('請輸入有效天數');return;}
+  const allUsers=await getAll('users');
+  const accounts=await getAll('accounts');
+  const students=accounts.filter(a=>a.role==='student').sort((a,b)=>a.id.localeCompare(b.id));
+  // build date headers
+  const dateHeaders=[];
+  for(let i=days-1;i>=0;i--){const d=new Date();d.setDate(d.getDate()-i);dateHeaders.push(d.toISOString().slice(0,10));}
+  // build course headers
+  const courseHeaders=AC.map(c=>c.name);
+  // CSV header
+  const headers=['學號','姓名','班級','積分','已學單字',...dateHeaders.map(d=>`${d.slice(5)} 完成率`),...courseHeaders.map(n=>n+' 進度%')];
+  const rows=[headers.join(',')];
+  students.forEach(s=>{
+    const u=allUsers.find(x=>x.id===s.id)||{};
+    const dp=u.daily_progress||{};
+    const known=u.known||{};
+    const classes=(s.classes||[]).map(cid=>{const c=ALL_CLASSES.find(x=>x.id===cid);return c?c.level+c.grade:'?';}).join('/');
+    const dayVals=dateHeaders.map(ds=>{
+      const d=dp[ds];
+      if(!d) return '—';
+      if(d.quizDone) return (d.finalPct||100)+'%';
+      if(d.studyDone) return '背誦完';
+      if(d.doneIds?.length) return '背誦中';
+      return '未開始';
+    });
+    const courseVals=AC.map(c=>{
+      const ws=AW.filter(w=>w.cid===c.id);
+      if(!ws.length) return '0%';
+      const done=ws.filter(w=>known[w.id]).length;
+      return Math.round(done/ws.length*100)+'%';
+    });
+    const row=[s.id, s.name||'', classes, u.score||0, Object.keys(known).length, ...dayVals, ...courseVals];
+    rows.push(row.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(','));
+  });
+  const bom='﻿'; // UTF-8 BOM for Excel
+  const blob=new Blob([bom+rows.join('
+')],{type:'text/csv;charset=utf-8'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');a.href=url;
+  a.download=`成績匯出_${todayStr()}.csv`;
+  document.body.appendChild(a);a.click();
+  document.body.removeChild(a);URL.revokeObjectURL(url);
+};
+
 window.renderStudentList=async function(){
   const list=document.getElementById('student-list-view');
   list.innerHTML='<div class="loading">載入中...</div>';
   const today=todayStr();
+  // filter controls
+  const filterClass=document.getElementById('filter-stu-class')?.value||'';
+  const filterFrom=document.getElementById('filter-date-from')?.value||'';
+  const filterTo=document.getElementById('filter-date-to')?.value||today;
+  const filterIncomplete=document.getElementById('filter-incomplete')?.checked||false;
   const planIds=APP_SETTINGS.todayPlan?.wordIds?.length?APP_SETTINGS.todayPlan.wordIds:computeNewWordsForDate(today);
   const planWords=planIds.map(id=>AW.find(w=>w.id===id)).filter(Boolean);
   const isManualPlan=!!(APP_SETTINGS.todayPlan?.wordIds?.length);
-  const all=(await getAll('users')).filter(u=>u.role!=='admin');
-  all.sort((a,b)=>b.score-a.score);
-  const totalStu=all.length;
-  const doneTodayStu=all.filter(u=>u.daily_progress?.[today]?.quizDone).length;
-  const studyDoneStu=all.filter(u=>u.daily_progress?.[today]?.studyDone&&!u.daily_progress?.[today]?.quizDone).length;
+  let allUsers=(await getAll('users')).filter(u=>u.role!=='admin');
+  // filter by class
+  if(filterClass){
+    const accounts=await getAll('accounts');
+    const inClass=new Set(accounts.filter(a=>(a.classes||[]).includes(filterClass)).map(a=>a.id));
+    allUsers=allUsers.filter(u=>inClass.has(u.id));
+  }
+  // filter by incomplete in date range
+  if(filterIncomplete&&filterFrom){
+    allUsers=allUsers.filter(u=>{
+      const dp=u.daily_progress||{};
+      let d=new Date(filterFrom); const toD=new Date(filterTo);
+      while(d<=toD){
+        const ds=d.toISOString().slice(0,10);
+        if(!dp[ds]?.quizDone) return true;
+        d.setDate(d.getDate()+1);
+      }
+      return false;
+    });
+  }
+  allUsers.sort((a,b)=>b.score-a.score);
+  const totalStu=allUsers.length;
+  const doneTodayStu=allUsers.filter(u=>u.daily_progress?.[today]?.quizDone).length;
+  const studyDoneStu=allUsers.filter(u=>u.daily_progress?.[today]?.studyDone&&!u.daily_progress?.[today]?.quizDone).length;
+  const all=allUsers;
   list.innerHTML='';
   const summaryEl=document.createElement('div');summaryEl.className='card mb12';
   summaryEl.style.cssText='background:linear-gradient(135deg,#2563eb,#1e40af);color:#fff;border:none';
@@ -1136,6 +1714,40 @@ function showStudentDetail(u){
   const histEl=document.createElement('div');histEl.className='card mb12';let histHTML='<div class="bold text-sm mb8">📅 近 14 天每日任務</div><div style="display:flex;gap:4px;flex-wrap:wrap">';
   for(let i=13;i>=0;i--){const d=new Date();d.setDate(d.getDate()-i);const ds=d.toISOString().slice(0,10);const dpDay=dp[ds];const label=i===0?'今':(d.getMonth()+1)+'/'+(d.getDate());let bg,color,icon;if(!dpDay||dpDay.total===0){bg='#f1f5f9';color='#94a3b8';icon='—';}else if(dpDay.quizDone){bg=dpDay.isMakeup?'#e0f2fe':'var(--sl)';color=dpDay.isMakeup?'#0369a1':'var(--success)';icon=(dpDay.finalPct||'✓')+(dpDay.finalPct?'%':'')+(dpDay.isMakeup?'📋':'');}else{bg='var(--wl)';color='var(--warn)';icon=dpDay.doneIds?.length?dpDay.doneIds.length+'...':'進行中';}histHTML+=`<div style="background:${bg};color:${color};border-radius:6px;padding:5px 7px;text-align:center;font-size:11px;font-weight:500;min-width:36px"><div>${label}</div><div style="margin-top:1px">${icon}</div></div>`;}
   histHTML+='</div>';histEl.innerHTML=histHTML;detail.appendChild(histEl);
+  // incomplete days analysis (when filter applied)
+  const filterFrom=document.getElementById('filter-date-from')?.value||'';
+  const filterTo=document.getElementById('filter-date-to')?.value||today;
+  if(filterFrom){
+    const incEl=document.createElement('div');incEl.className='card mb12';
+    incEl.style.cssText='border-left:3px solid var(--warn)';
+    let incDays=[];
+    let d=new Date(filterFrom); const toD=new Date(filterTo);
+    while(d<=toD){
+      const ds=d.toISOString().slice(0,10);
+      if(!dp[ds]?.quizDone) incDays.push(ds);
+      d.setDate(d.getDate()+1);
+    }
+    if(incDays.length){
+      incEl.innerHTML=`<div class="bold text-sm mb8" style="color:var(--warn)">⚠️ 未完成日期（${filterFrom} ～ ${filterTo}）</div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px">
+          ${incDays.map(ds=>{
+            const dd=new Date(ds);
+            const dayDp=dp[ds];
+            let status='未開始',bg='#f1f5f9',color='#94a3b8';
+            if(dayDp?.studyDone){status='測驗未做';bg='var(--wl)';color='var(--warn)';}
+            else if(dayDp?.doneIds?.length){status='背誦中';bg='var(--wl)';color='var(--warn)';}
+            return `<div style="background:${bg};color:${color};border-radius:6px;padding:5px 9px;font-size:12px;font-weight:500">
+              <div>${(dd.getMonth()+1)}/${dd.getDate()}（${'日一二三四五六'[dd.getDay()]}）</div>
+              <div style="font-size:10px;margin-top:1px">${status}</div>
+            </div>`;
+          }).join('')}
+        </div>`;
+    } else {
+      incEl.innerHTML=`<div class="bold text-sm" style="color:var(--success)">✓ 此日期範圍內全部完成！</div>`;
+    }
+    detail.appendChild(incEl);
+  }
+
   const srLevels=[0,0,0,0,0];Object.keys(sr).forEach(wid=>{srLevels[Math.min(sr[wid]?.level||0,4)]++;});
   const srEl=document.createElement('div');srEl.className='card mb12';
   srEl.innerHTML=`<div class="bold text-sm mb8">🧠 遺忘曲線進度（共 ${Object.keys(sr).length} 個單字進入複習）</div><div style="display:flex;gap:6px;flex-wrap:wrap">${['初學','第2次','第3次','第4次','熟練'].map((label,i)=>`<div style="flex:1;min-width:52px;background:var(--bg);border-radius:8px;padding:8px;text-align:center;border:1px solid var(--border)"><div class="text-muted" style="font-size:10px">${label}</div><div style="font-size:18px;font-weight:700;color:var(--brand);margin-top:2px">${srLevels[i]}</div></div>`).join('')}</div>`;
@@ -1253,6 +1865,7 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
 .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
 .bold{font-weight:600}.text-muted{color:var(--muted);font-size:13px}.text-sm{font-size:13px}
 .header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--border)}
+.rank-mode-btn.active{background:var(--brand);color:#fff;border-color:var(--brand)}
 </style>
 </head>
 <body>
@@ -1313,6 +1926,8 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
     <div class="tab" onclick="stuTab('quiz',this)">考核</div>
     <div class="tab" onclick="stuTab('rank',this)">排名</div>
     <div class="tab" onclick="stuTab('badges',this)">成就</div>
+    <div class="tab" onclick="stuTab('search',this)">查字</div>
+    <div class="tab" onclick="stuTab('notebook',this)">複習本</div>
   </div>
 
   <div id="t-home">
@@ -1321,16 +1936,7 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
       <div class="stat-card"><div class="stat-label">已學習</div><div class="stat-num" id="h-learned">0</div></div>
       <div class="stat-card"><div class="stat-label">我的排名</div><div class="stat-num" id="h-rank">#-</div></div>
     </div>
-    <div class="card mb12" style="background:linear-gradient(135deg,#2563eb,#1e40af);color:#fff;border:none">
-      <div style="display:flex;align-items:center;justify-content:space-between">
-        <div>
-          <div style="font-size:13px;opacity:0.85;margin-bottom:4px">📅 今日學習任務</div>
-          <div style="font-size:22px;font-weight:700" id="daily-count">載入中...</div>
-          <div style="font-size:12px;opacity:0.8;margin-top:2px" id="daily-desc"></div>
-        </div>
-        <button id="daily-start-btn" onclick="startDaily()" style="padding:9px 16px;border-radius:8px;border:none;background:rgba(255,255,255,0.2);color:#fff;cursor:pointer;font-size:14px;font-weight:600">開始 →</button>
-      </div>
-    </div>
+    <div id="daily-tasks-container"></div>
     <div id="missed-tasks-section" style="display:none;margin-bottom:12px">
       <div class="flex gap8 mb8" style="justify-content:space-between;align-items:center">
         <h3>⚠️ 未完成的任務</h3>
@@ -1362,11 +1968,14 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
         </div>
       </div>
     </div>
-    <div class="flex gap8" style="justify-content:center;margin-bottom:12px">
+    <div class="flex gap8" style="justify-content:center;margin-bottom:8px">
       <button class="btn" onclick="studyNav(-1)">← 上一個</button>
       <button class="btn btn-p" onclick="markKnown()">認識 ✓</button>
       <button class="btn" id="forgot-btn" onclick="markForgot()" style="display:none;background:var(--dl);color:var(--danger);border-color:var(--danger)">忘記 ✗</button>
       <button class="btn" onclick="studyNav(1)">下一個 →</button>
+    </div>
+    <div style="text-align:center;margin-bottom:12px">
+      <button class="btn btn-sm" id="notebook-btn" onclick="toggleNotebook()" style="font-size:12px">📌 加入複習本</button>
     </div>
     <div class="progress-bar"><div class="progress-fill" id="study-bar" style="width:0%"></div></div>
   </div>
@@ -1419,11 +2028,35 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
         ・完成一個課程所有單字 <b>+50 分</b>
       </div>
     </div>
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <button class="btn rank-mode-btn active" style="flex:1" onclick="switchRankMode('class',this)">🏫 班級排名</button>
+      <button class="btn rank-mode-btn" style="flex:1" onclick="switchRankMode('school',this)">🌐 全校排名</button>
+    </div>
     <div class="card" id="rank-list"><div class="loading">載入中...</div></div>
   </div>
 
   <div id="t-badges" style="display:none">
     <div class="card" id="badges-list"></div>
+  </div>
+
+  <div id="t-search" style="display:none">
+    <div class="flex gap8 mb12">
+      <input id="stu-search-input" class="mb0" placeholder="輸入英文或中文搜尋..." style="flex:1"
+        oninput="renderStuSearch()" autocomplete="off" autocorrect="off" spellcheck="false"/>
+    </div>
+    <div id="stu-search-results"><p class="text-muted text-sm" style="text-align:center;padding:24px">輸入關鍵字開始搜尋</p></div>
+  </div>
+
+  <div id="t-notebook" style="display:none">
+    <div class="flex gap8 mb12" style="justify-content:space-between;align-items:center">
+      <h3>📌 單字複習本</h3>
+      <span class="tag tag-a" id="notebook-count"></span>
+    </div>
+    <div class="flex gap8 mb12">
+      <button class="btn btn-sm btn-p" onclick="startNotebookQuiz()" style="flex:1">📝 複習本測驗</button>
+      <button class="btn btn-sm" onclick="renderNotebook()">重新整理</button>
+    </div>
+    <div id="notebook-list"><div class="loading">載入中...</div></div>
   </div>
 </div>
 
@@ -1526,6 +2159,38 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
     <div class="flex gap8 mb12" style="justify-content:space-between;align-items:center">
       <span class="bold text-sm" id="stu-panel-title">所有學生</span>
       <button id="stu-back-btn" class="btn btn-sm" style="display:none" onclick="showStudentList()">← 返回列表</button>
+    </div>
+    <div class="flex gap8 mb8" style="justify-content:flex-end">
+      <button class="btn btn-sm" onclick="exportGrades()">📥 匯出成績 CSV</button>
+    </div>
+    <div id="stu-filter-bar" class="card mb12">
+      <div class="bold text-sm mb8">篩選條件</div>
+      <label>班級篩選</label>
+      <select id="filter-stu-class" class="mb8">
+        <option value="">所有學生</option>
+        <optgroup label="國小">
+          <option value="國小-D級">國小 D級</option><option value="國小-C級">國小 C級</option>
+          <option value="國小-B級">國小 B級</option><option value="國小-A級">國小 A級</option>
+          <option value="國小-S級">國小 S級</option>
+        </optgroup>
+        <optgroup label="國中">
+          <option value="國中-國一">國中 國一</option><option value="國中-國二">國中 國二</option>
+          <option value="國中-國三">國中 國三</option>
+        </optgroup>
+        <optgroup label="高中">
+          <option value="高中-高一">高中 高一</option><option value="高中-高二">高中 高二</option>
+          <option value="高中-高三">高中 高三</option>
+        </optgroup>
+      </select>
+      <label class="flex gap8" style="align-items:center;cursor:pointer">
+        <input type="checkbox" id="filter-incomplete" style="width:16px;height:16px;accent-color:var(--brand);margin-bottom:0"/>
+        <span>只顯示有未完成進度的學生</span>
+      </label>
+      <div class="flex gap8 mt8">
+        <div style="flex:1"><label>起始日期</label><input type="date" id="filter-date-from" class="mb0"/></div>
+        <div style="flex:1"><label>結束日期</label><input type="date" id="filter-date-to" class="mb0"/></div>
+      </div>
+      <button class="btn btn-p mt8" style="width:100%" onclick="renderStudentList()">套用篩選</button>
     </div>
     <div id="student-list-view"><div class="loading">載入中...</div></div>
     <div id="student-detail-view" style="display:none"></div>
