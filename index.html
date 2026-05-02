@@ -569,22 +569,23 @@ function loadSC() {
   const sel=document.getElementById('study-course'); sel.innerHTML='';
   if(!AC.length){
     const o=document.createElement('option');o.value='';o.textContent='（無課程）';sel.appendChild(o);
-    // show reload button
     const existing=document.getElementById('reload-course-btn');
     if(!existing){
-      const btn=document.createElement('button');
-      btn.id='reload-course-btn';btn.className='btn btn-sm mt8';btn.style.width='100%';
-      btn.textContent='🔄 重新載入課程';
-      btn.onclick=async()=>{
-        if(!CURRENT_CLASS) return;
-        await loadAllForClass(CURRENT_CLASS.id);
-        loadSC(); loadQC();
-      };
-      document.getElementById('t-study').insertBefore(btn, document.getElementById('t-study').children[1]);
+      const debugDiv=document.createElement('div');
+      debugDiv.id='reload-course-btn';
+      debugDiv.className='card mt8';
+      debugDiv.style.cssText='font-size:12px';
+      debugDiv.innerHTML='<div class="bold text-sm mb8" style="color:var(--warn)">⚠️ 課程載入失敗</div><div id="debug-info" class="text-muted">診斷中...</div><button class="btn btn-sm btn-p mt8" style="width:100%" onclick="fixCourseClassId()">🔧 一鍵修復課程歸屬</button>';
+      document.getElementById('t-study').insertBefore(debugDiv, document.getElementById('t-study').children[1]);
+      // show debug info
+      getAll('courses').then(cs=>{
+        const ids=[...new Set(cs.map(c=>c.classId||'(無classId)'))];
+        const el=document.getElementById('debug-info');
+        if(el) el.textContent='目前班級ID: '+(CURRENT_CLASS?.id||'?')+' | 資料庫classId: '+ids.join(', ');
+      });
     }
     return;
   }
-  // remove reload button if courses loaded
   const existing=document.getElementById('reload-course-btn');
   if(existing) existing.remove();
   AC.forEach(c=>{const o=document.createElement('option');o.value=c.id;o.textContent=c.name;sel.appendChild(o);});
