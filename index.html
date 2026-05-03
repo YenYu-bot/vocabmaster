@@ -2067,7 +2067,7 @@ async function renderAdminCourses(){
     list.innerHTML=`<p class="text-muted text-sm" style="padding:8px">${q?'找不到「'+q+'」相關課程':'尚無課程'}</p>`;return;
   }
   const hint=document.createElement('p');hint.className='text-muted text-sm mb8';
-  hint.textContent=`共 ${filtered.length} 個課程${q?' · 搜尋：「'+q+'」':''}`;
+  hint.textContent=`共 ${filtered.length} 個課程${q?' · 搜尋：「'+q+'」（共 '+baseList.length+' 筆）':'（v2）'}`;
   list.appendChild(hint);
   const dragRef={v:null};
   if(courseGrouping){
