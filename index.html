@@ -36,17 +36,41 @@ async function delOne(col, id) { await deleteDoc(doc(db, col, id)); }
 const SYSTEM_ADMIN = { id: 'bhcst0001', password: '123', role: 'admin', name: '系統管理員' };
 const SR_INTERVALS = [1, 2, 4, 7, 15];
 const PASS_THRESHOLD = 0.9;
-const CLASS_STRUCTURE = {
+let CLASS_STRUCTURE = {
   '國小': ['D級','C級','B級','A級','S級'],
   '國中': ['國一','國二','國三'],
   '高中': ['高一','高二','高三']
 };
 // progression order: flat list
-const CLASS_PROGRESSION = [
+let CLASS_PROGRESSION = [
   '國小-D級','國小-C級','國小-B級','國小-A級','國小-S級',
   '國中-國一','國中-國二','國中-國三',
   '高中-高一','高中-高二','高中-高三'
 ];
+// custom classes added by super admin (loaded from Firebase)
+let CUSTOM_CLASSES = []; // [{id, level, grade, displayName, isCustom:true}]
+
+function applyCustomClasses(){
+  CLASS_STRUCTURE = {
+    '國小': ['D級','C級','B級','A級','S級'],
+    '國中': ['國一','國二','國三'],
+    '高中': ['高一','高二','高三']
+  };
+  CLASS_PROGRESSION = [
+    '國小-D級','國小-C級','國小-B級','國小-A級','國小-S級',
+    '國中-國一','國中-國二','國中-國三',
+    '高中-高一','高中-高二','高中-高三'
+  ];
+  CUSTOM_CLASSES.forEach(cc=>{
+    if(!CLASS_STRUCTURE[cc.level]) CLASS_STRUCTURE[cc.level]=[];
+    if(!CLASS_STRUCTURE[cc.level].includes(cc.grade)){
+      CLASS_STRUCTURE[cc.level].push(cc.grade);
+    }
+    const cid=cc.id||cc.level+'-'+cc.grade;
+    if(!CLASS_PROGRESSION.includes(cid)) CLASS_PROGRESSION.push(cid);
+  });
+}
+
 function getNextClass(cid) {
   const idx = CLASS_PROGRESSION.indexOf(cid);
   if(idx < 0 || idx >= CLASS_PROGRESSION.length-1) return null;
@@ -306,7 +330,13 @@ async function loadAllForClass(cid) {
 }
 
 async function loadAllForAdmin() {
-  const [cs, ws] = await Promise.all([getAll('courses'), getAll('words')]);
+  const [cs, ws, customClassDocs] = await Promise.all([getAll('courses'), getAll('words'), getAll('custom_classes')]);
+  CUSTOM_CLASSES = customClassDocs;
+  applyCustomClasses();
+  // merge custom classes into ALL_CLASSES
+  CUSTOM_CLASSES.forEach(cc=>{
+    if(!ALL_CLASSES.find(c=>c.id===cc.id)) ALL_CLASSES.push(cc);
+  });
   const isSuperAdmin = CU.id === 'bhcst0001';
   if(isSuperAdmin){
     AC = cs.sort((a,b)=>(a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0));
@@ -695,7 +725,10 @@ async function showSC(){
   document.getElementById('study-en').textContent=w.en;
   document.getElementById('study-pos').textContent=(w.phonetic?'['+w.phonetic+'] ':''+(w.pos||''));
   document.getElementById('study-zh').textContent=w.zh;
-  document.getElementById('study-ex').textContent=w.ex||'';
+  const exEl=document.getElementById('study-ex');
+  const exBtn=document.getElementById('speak-ex-btn');
+  exEl.textContent=w.ex||'';
+  if(exBtn) exBtn.style.display=w.ex?'inline-block':'none';
   document.getElementById('study-progress').textContent=(SI+1)+'/'+SW.length;
   document.getElementById('study-bar').style.width=Math.round((SI+1)/SW.length*100)+'%';
   // update notebook button state
@@ -734,7 +767,7 @@ function initSpeech(){
 }
 initSpeech();
 
-window.speakWord = function(word){
+window.speakWord = function(word, btnId){
   if(!window.speechSynthesis||!word) return;
   window.speechSynthesis.cancel(); // stop any ongoing speech
   const utter = new SpeechSynthesisUtterance(word);
@@ -743,14 +776,16 @@ window.speakWord = function(word){
   utter.pitch = 1;
   if(speechVoice) utter.voice = speechVoice;
   window.speechSynthesis.speak(utter);
-  // visual feedback on button
-  const btn = document.getElementById('speak-btn');
+  // visual feedback on button (default: speak-btn, or custom btnId)
+  const targetId = btnId || 'speak-btn';
+  const btn = document.getElementById(targetId);
   if(btn){
+    const origText=btn.textContent;
     btn.textContent = '🔊';
     btn.style.color = 'var(--brand)';
     btn.style.borderColor = 'var(--brand)';
     utter.onend = () => {
-      if(btn){ btn.textContent = '🔈 發音'; btn.style.color = ''; btn.style.borderColor = ''; }
+      if(btn){ btn.textContent = origText; btn.style.color = ''; btn.style.borderColor = ''; }
     };
   }
 };
@@ -1712,24 +1747,100 @@ window.deleteAccount=async function(id){
 };
 
 // ── class management ──────────────────────────────────────────
+// ── custom class management (super admin only) ───────────────
+function openAddCustomClass(){
+  const modal=document.createElement('div');
+  modal.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px;width:100%;max-width:380px">
+    <div class="bold mb12">＋ 新增自訂班級</div>
+    <label>所屬程度（分類）</label>
+    <div class="flex gap8 mb8">
+      <input id="cc-level" class="mb0" placeholder="例：成人英文" style="flex:1"/>
+      <span class="text-muted text-sm" style="line-height:36px;white-space:nowrap">或選現有：</span>
+      <select id="cc-level-sel" class="mb0" style="width:auto" onchange="document.getElementById('cc-level').value=this.value">
+        <option value="">--</option>
+        ${Object.keys(CLASS_STRUCTURE).map(l=>`<option value="${l}">${l}</option>`).join('')}
+      </select>
+    </div>
+    <label>班級名稱</label>
+    <input id="cc-grade" class="mb8" placeholder="例：初級、A班"/>
+    <label>顯示名稱（選填，空白則同班級名稱）</label>
+    <input id="cc-display" class="mb12" placeholder="例：成人初級班"/>
+    <div class="flex gap8">
+      <button class="btn btn-p" style="flex:1" onclick="saveCustomClass(this)">新增</button>
+      <button class="btn" style="flex:1" onclick="this.closest('[style*=fixed]').remove()">取消</button>
+    </div>
+    <div id="cc-msg" style="margin-top:8px;font-size:13px"></div>
+  </div>`;
+  document.body.appendChild(modal);
+}
+
+window.saveCustomClass=async function(btn){
+  const modal=btn.closest('[style*=fixed]');
+  const level=modal.querySelector('#cc-level').value.trim();
+  const grade=modal.querySelector('#cc-grade').value.trim();
+  const displayName=modal.querySelector('#cc-display').value.trim();
+  const msg=modal.querySelector('#cc-msg');
+  if(!level||!grade){msg.style.color='var(--danger)';msg.textContent='請填入程度和班級名稱';return;}
+  const cid=level+'-'+grade;
+  if(CUSTOM_CLASSES.find(c=>c.id===cid)||(CLASS_STRUCTURE[level]||[]).includes(grade)){
+    msg.style.color='var(--danger)';msg.textContent='此班級已存在';return;
+  }
+  msg.style.color='var(--muted)';msg.textContent='新增中...';
+  try{
+    const cc={id:cid,level,grade,displayName:displayName||grade,isCustom:true,createdAt:Date.now()};
+    await setOne('custom_classes',cid,cc);
+    await setOne('classes',cid,{id:cid,level,grade,displayName:displayName||grade,createdAt:Date.now()});
+    CUSTOM_CLASSES.push(cc);
+    if(!ALL_CLASSES.find(c=>c.id===cid)) ALL_CLASSES.push(cc);
+    applyCustomClasses();
+    msg.style.color='var(--success)';msg.textContent='✓ 已新增「'+cid+'」';
+    setTimeout(()=>{modal.remove();renderClassList();},800);
+  }catch(e){msg.style.color='var(--danger)';msg.textContent='失敗：'+e.message;}
+};
+
+window.deleteCustomClass=async function(cid){
+  const cc=CUSTOM_CLASSES.find(c=>c.id===cid);
+  if(!confirm('確定刪除自訂班級「'+(cc?.displayName||cid)+'」？\n注意：不會刪除已指派到此班級的課程，只移除班級定義。'))return;
+  try{
+    await delOne('custom_classes',cid);
+    CUSTOM_CLASSES=CUSTOM_CLASSES.filter(c=>c.id!==cid);
+    applyCustomClasses();
+    renderClassList();
+  }catch(e){alert('刪除失敗：'+e.message);}
+};
+
 async function renderClassList(){
   const list=document.getElementById('class-list');list.innerHTML='';
   const hint=document.createElement('p');hint.className='text-muted text-sm mb12';
   hint.textContent='班級依「程度 > 等級」分類，每個班級有獨立的課程和每日任務設定';
   list.appendChild(hint);
+  // super admin: add custom class button
+  if(CU?.id==='bhcst0001'){
+    const addBtn=document.createElement('button');
+    addBtn.className='btn btn-p mb12';addBtn.style.width='100%';
+    addBtn.textContent='＋ 新增自訂班級';
+    addBtn.onclick=openAddCustomClass;
+    list.appendChild(addBtn);
+  }
   Object.entries(CLASS_STRUCTURE).forEach(([level,grades])=>{
     const section=document.createElement('div');section.className='card mb12';
     let html=`<div class="bold mb8">${level}</div>`;
     grades.forEach(grade=>{
       const cid=level+'-'+grade;
       const cls=ALL_CLASSES.find(c=>c.id===cid);
-      const courseCount=AC.filter(c=>c.classId===cid).length;
+      const isCustom=CUSTOM_CLASSES.some(cc=>cc.id===cid);
+      const courseCount=AC.filter(c=>{
+        if(Array.isArray(c.classIds))return c.classIds.includes(cid);
+        return c.classId===cid;
+      }).length;
       const classCid=`${level}-${grade}`;
       html+=`<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)">
         <div style="flex:1">
           <div class="flex gap8">
             <div class="bold text-sm">${cls?.displayName||grade}</div>
             ${cls?.displayName&&cls.displayName!==grade?`<span class="text-muted" style="font-size:11px">（${grade}）</span>`:''}
+            ${isCustom?`<span class="tag" style="background:#fef3c7;color:#d97706;font-size:10px">自訂</span>`:''}
           </div>
           <div class="text-muted" style="font-size:12px">${courseCount} 個課程${cls?.startDate?' · 起始 '+cls.startDate:''}</div>
         </div>
@@ -1737,6 +1848,7 @@ async function renderClassList(){
         ${CU?.id==='bhcst0001'?`<button class="btn btn-sm" onclick="editClassName('${classCid}','${cls?.displayName||grade}')">改名</button>`:''}
         <button class="btn btn-sm" onclick="editClassThreshold('${classCid}')">升級條件</button>
         <button class="btn btn-sm btn-p" onclick="ensureClass('${level}','${grade}')">進入設定</button>
+        ${isCustom&&CU?.id==='bhcst0001'?`<button class="btn btn-sm" style="background:var(--danger);color:#fff;border-color:var(--danger)" onclick="deleteCustomClass('${cid}')">刪除</button>`:''}
       </div>`;
     });
     section.innerHTML=html;list.appendChild(section);
@@ -2067,7 +2179,7 @@ async function renderAdminCourses(){
     list.innerHTML=`<p class="text-muted text-sm" style="padding:8px">${q?'找不到「'+q+'」相關課程':'尚無課程'}</p>`;return;
   }
   const hint=document.createElement('p');hint.className='text-muted text-sm mb8';
-  hint.textContent=`共 ${filtered.length} 個課程${q?' · 搜尋：「'+q+'」（共 '+baseList.length+' 筆）':'（v2）'}`;
+  hint.textContent=`共 ${filtered.length} 個課程${q?' · 搜尋：「'+q+'」':''}`;
   list.appendChild(hint);
   const dragRef={v:null};
   if(courseGrouping){
@@ -2804,7 +2916,11 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
         <div class="flip-back">
           <div class="text-muted text-sm">中文翻譯</div>
           <div class="word-zh" id="study-zh">-</div>
-          <div class="text-sm mt8" id="study-ex" style="color:var(--brand-d);line-height:1.5"></div>
+          <div class="text-sm mt8" style="display:flex;align-items:flex-start;gap:6px">
+            <span id="study-ex" style="color:var(--brand-d);line-height:1.5;flex:1"></span>
+            <button id="speak-ex-btn" onclick="speakWord(document.getElementById('study-ex').textContent,'speak-ex-btn')"
+              style="display:none;font-size:11px;padding:2px 7px;border:1px solid var(--border);border-radius:6px;background:var(--bg);cursor:pointer;white-space:nowrap;flex-shrink:0;margin-top:1px">🔈</button>
+          </div>
         </div>
       </div>
     </div>
