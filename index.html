@@ -722,7 +722,9 @@ async function showSC(){
   const w=SW[SI];
   if(!w){document.getElementById('study-en').textContent='（此課程無單字）';return;}
   document.getElementById('flip-card').classList.remove('flipped');
-  document.getElementById('study-en').textContent=w.en;
+  const enEl=document.getElementById('study-en');
+  enEl.textContent=w.en; // show immediately, then color
+  renderSyllableWord(w.en, enEl, '28px');
   document.getElementById('study-pos').textContent=(w.phonetic?'['+w.phonetic+'] ':''+(w.pos||''));
   document.getElementById('study-zh').textContent=w.zh;
   const exEl=document.getElementById('study-ex');
@@ -752,6 +754,53 @@ async function showSC(){
 
 // ── speech synthesis ─────────────────────────────────────────
 let speechVoice = null;
+
+// ── syllable coloring ─────────────────────────────────────────
+const SYLLABLE_COLORS = ['#2563eb','#d97706','#16a34a','#9333ea','#dc2626','#0891b2'];
+const syllableCache = {}; // { word: ['syl','la','ble'] } — session cache
+
+async function fetchSyllables(word){
+  const key = word.toLowerCase().trim();
+  if(syllableCache[key]) return syllableCache[key];
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        model:'claude-sonnet-4-20250514',
+        max_tokens:100,
+        messages:[{role:'user',content:`Split the English word "${key}" into syllables. Reply ONLY with a JSON array of strings, no explanation. Example: classmate → ["class","mate"], beautiful → ["beau","ti","ful"]`}]
+      })
+    });
+    const data = await res.json();
+    const text = (data.content||[]).map(b=>b.text||'').join('').trim();
+    const clean = text.replace(/```json|```/g,'').trim();
+    const parts = JSON.parse(clean);
+    if(Array.isArray(parts) && parts.length){
+      syllableCache[key] = parts;
+      return parts;
+    }
+  } catch(e){}
+  syllableCache[key] = [key]; // fallback: whole word as one syllable
+  return [key];
+}
+
+function syllableHTML(parts, fontSize){
+  const fs = fontSize ? `font-size:${fontSize};` : '';
+  return parts.map((s,i)=>
+    `<span style="${fs}color:${SYLLABLE_COLORS[i % SYLLABLE_COLORS.length]};font-weight:700">${s}</span>`
+  ).join('');
+}
+
+// Render syllable-colored word into an element; falls back to plain text while loading
+async function renderSyllableWord(word, el, fontSize){
+  if(!word){ el.textContent=''; return; }
+  // show plain word immediately
+  el.textContent = word;
+  const parts = await fetchSyllables(word);
+  if(parts.length <= 1){ el.textContent = word; return; }
+  el.innerHTML = syllableHTML(parts, fontSize);
+}
 function initSpeech(){
   if(!window.speechSynthesis) return;
   const setVoice = () => {
@@ -2010,20 +2059,60 @@ function updateIC(){
   sel.innerHTML='';
   AC.forEach(c=>{const o=document.createElement('option');o.value=c.id;o.textContent=c.name;sel.appendChild(o);});
 }
+// Batch-prefetch syllables for a list of words (up to 40 at a time) using one API call
+async function prefetchSyllables(words){
+  const uncached = [...new Set(words.map(w=>w.toLowerCase().trim()))].filter(w=>!syllableCache[w]);
+  if(!uncached.length) return;
+  const batch = uncached.slice(0,40); // limit per call
+  try{
+    const prompt = 'Split each English word into syllables. Reply ONLY with a JSON object mapping each word to its syllable array. No explanation.\nWords: ' + JSON.stringify(batch);
+    const res = await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:800,messages:[{role:'user',content:prompt}]})
+    });
+    const data = await res.json();
+    const text = (data.content||[]).map(b=>b.text||'').join('').trim();
+    const clean = text.replace(/```json|```/g,'').trim();
+    const map = JSON.parse(clean);
+    Object.entries(map).forEach(([w,parts])=>{ if(Array.isArray(parts)&&parts.length) syllableCache[w.toLowerCase()]=parts; });
+  }catch(e){}
+}
+
 window.renderWords=function(){
   const q=(document.getElementById('search-word')?.value||'').toLowerCase();
   const fc=document.getElementById('filter-course')?.value||'';
   const list=document.getElementById('word-list');list.innerHTML='';
   const f=AW.filter(w=>(!q||w.en.toLowerCase().includes(q)||w.zh.includes(q))&&(!fc||w.cid===fc));
   if(!f.length){list.innerHTML='<p class="text-muted text-sm" style="padding:10px 0">無符合單字</p>';return;}
+  // kick off batch prefetch so syllable colors appear quickly
+  prefetchSyllables(f.map(w=>w.en)).then(()=>{
+    // re-color any already-rendered .en-word spans
+    list.querySelectorAll('.en-word[data-word]').forEach(sp=>{
+      const parts=syllableCache[sp.dataset.word.toLowerCase()];
+      if(parts&&parts.length>1) sp.innerHTML=syllableHTML(parts,'14px');
+    });
+  });
   f.forEach(w=>{
     const c=AC.find(x=>x.id===w.cid);
     const row=document.createElement('div');row.style.cssText='display:flex;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid var(--border)';
+    const enSpan=document.createElement('span');enSpan.className='bold text-sm';enSpan.textContent=w.en;
     row.innerHTML=`<input type="checkbox" class="word-cb" data-id="${w.id}" style="width:16px;height:16px;flex-shrink:0;cursor:pointer;accent-color:var(--brand)" onchange="updateBatchBar()"/>
-      <div style="flex:1"><div class="flex gap8"><span class="bold text-sm">${w.en}</span><span class="tag tag-a" style="font-size:11px">${w.pos||''}</span></div><div class="text-muted" style="font-size:12px">${w.zh}${c?' · '+c.name:''}</div></div>
+      <div style="flex:1">
+        <div class="flex gap8" style="align-items:center">
+          <span class="en-word bold text-sm" data-word="${w.en.replace(/"/g,'&quot;')}">${w.en}</span>
+          <span class="tag tag-a" style="font-size:11px">${w.pos||''}</span>
+        </div>
+        <div class="text-muted" style="font-size:12px">${w.zh}${c?' · '+c.name:''}</div>
+      </div>
       <button class="btn btn-sm" style="flex-shrink:0" onclick="editWord('${w.id}')">編輯</button>
       <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger);flex-shrink:0" onclick="deleteWord('${w.id}')">刪除</button>`;
     list.appendChild(row);
+    // async syllable coloring
+    const sp=row.querySelector('.en-word');
+    fetchSyllables(w.en).then(parts=>{
+      if(parts.length>1) sp.innerHTML=syllableHTML(parts,'14px');
+    });
   });
 };
 window.updateBatchBar=function(){
