@@ -1228,6 +1228,7 @@ async function renderAccountList(){
         <div class="flex gap8"><span class="bold text-sm">${s.id}</span><span class="text-muted text-sm">${s.name||'（無名稱）'}</span></div>
         <div class="text-muted" style="font-size:12px">班級：${classes||'未指派'}</div>
       </div>
+      ${isSuperAdmin?`<button class="btn btn-sm" onclick="editAccountName('${s.id}','${s.name||''}')">改名</button>`:''}
       <button class="btn btn-sm" onclick="manageStudentClass('${s.id}')">班級</button>
       <button class="btn btn-sm" onclick="resetPassword('${s.id}')">重設密碼</button>
       <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deleteAccount('${s.id}')">刪除</button>`;
@@ -1265,6 +1266,7 @@ async function renderAccountList(){
           <div class="flex gap8"><span class="bold text-sm">${a.id}</span><span class="text-muted text-sm">${a.name||'（無名稱）'}</span></div>
           <div class="text-muted" style="font-size:12px">負責班級：${assigned}</div>
         </div>
+        <button class="btn btn-sm" onclick="editAccountName('${a.id}','${a.name||''}')">改名</button>
         <button class="btn btn-sm" onclick="manageAdminClass('${a.id}')">分派班級</button>
         <button class="btn btn-sm" onclick="resetPassword('${a.id}')">重設密碼</button>
         <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deleteAccount('${a.id}')">刪除</button>`;
@@ -1466,6 +1468,17 @@ window.createAdmin=async function(){
 };
 
 // ── manage admin class assignment ─────────────────────────────
+window.editAccountName=async function(id,currentName){
+  const newName=prompt(`修改「${id}」的顯示名稱：`,currentName);
+  if(newName===null)return; // cancelled
+  const name=newName.trim();
+  if(!name){alert('名稱不能為空');return;}
+  try{
+    await updateOne('accounts',id,{name});
+    renderAccountList();
+  }catch(e){alert('修改失敗：'+e.message);}
+};
+
 window.manageAdminClass=async function(id){
   const account=await getOne('accounts',id);
   if(!account){alert('找不到帳號');return;}
@@ -1584,18 +1597,46 @@ async function renderClassList(){
       const cid=level+'-'+grade;
       const cls=ALL_CLASSES.find(c=>c.id===cid);
       const courseCount=AC.filter(c=>c.classId===cid).length;
+      const classCid=`${level}-${grade}`;
       html+=`<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)">
         <div style="flex:1">
-          <div class="bold text-sm">${grade}</div>
+          <div class="flex gap8">
+            <div class="bold text-sm">${cls?.displayName||grade}</div>
+            ${cls?.displayName&&cls.displayName!==grade?`<span class="text-muted" style="font-size:11px">（${grade}）</span>`:''}
+          </div>
           <div class="text-muted" style="font-size:12px">${courseCount} 個課程${cls?.startDate?' · 起始 '+cls.startDate:''}</div>
         </div>
         ${cls?`<span class="tag tag-g">已建立</span>`:`<span class="tag" style="background:#f1f5f9;color:#94a3b8">未建立</span>`}
+        ${CU?.id==='bhcst0001'?`<button class="btn btn-sm" onclick="editClassName('${classCid}','${cls?.displayName||grade}')">改名</button>`:''}
         <button class="btn btn-sm btn-p" onclick="ensureClass('${level}','${grade}')">進入設定</button>
       </div>`;
     });
     section.innerHTML=html;list.appendChild(section);
   });
 }
+
+window.editClassName=async function(cid,currentName){
+  const newName=prompt(`修改班級顯示名稱（不影響系統ID）：`,currentName);
+  if(newName===null)return;
+  const displayName=newName.trim();
+  if(!displayName){alert('名稱不能為空');return;}
+  try{
+    // ensure class doc exists first
+    const existing=await getOne('classes',cid);
+    if(existing){
+      await updateOne('classes',cid,{displayName});
+    } else {
+      const [level,grade]=cid.split('-');
+      await setOne('classes',cid,{id:cid,level,grade,displayName,createdAt:Date.now()});
+      ALL_CLASSES.push({id:cid,level,grade,displayName});
+    }
+    // update local cache
+    const cls=ALL_CLASSES.find(c=>c.id===cid);
+    if(cls)cls.displayName=displayName;
+    else ALL_CLASSES.push({id:cid,level:cid.split('-')[0],grade:cid.split('-')[1],displayName});
+    renderClassList();
+  }catch(e){alert('修改失敗：'+e.message);}
+};
 
 window.ensureClass=async function(level,grade){
   const cid=level+'-'+grade;
@@ -1797,7 +1838,12 @@ async function renderAdminCourses(){
   AC.forEach((c)=>{
     const ws=AW.filter(w=>w.cid===c.id);
     const row=document.createElement('div');row.className='course-row';row.draggable=true;row.dataset.id=c.id;
-    row.innerHTML=`<div style="padding:0 8px 0 2px;cursor:grab;color:var(--muted);font-size:18px;user-select:none" title="拖曳排序">☰</div><div style="flex:1"><div class="bold text-sm">${c.name}</div><div class="text-muted" style="font-size:12px">${ws.length} 個單字</div></div><button class="btn btn-sm" style="flex-shrink:0" onclick="openWordSort('${c.id}')">排序單字</button><button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger);flex-shrink:0" onclick="deleteCourse('${c.id}')">刪除</button>`;
+    const isSA=CU?.id==='bhcst0001';
+    row.innerHTML=`<div style="padding:0 8px 0 2px;cursor:grab;color:var(--muted);font-size:18px;user-select:none" title="拖曳排序">☰</div>
+      <div style="flex:1"><div class="bold text-sm">${c.name}</div><div class="text-muted" style="font-size:12px">${ws.length} 個單字</div></div>
+      ${isSA?`<button class="btn btn-sm" style="flex-shrink:0" onclick="editCourseName('${c.id}','${c.name.replace(/'/g,"\\'")}')">改名</button>`:''}
+      <button class="btn btn-sm" style="flex-shrink:0" onclick="openWordSort('${c.id}')">排序單字</button>
+      <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger);flex-shrink:0" onclick="deleteCourse('${c.id}')">刪除</button>`;
     row.addEventListener('dragstart',e=>{dragSrc=row;e.dataTransfer.effectAllowed='move';row.style.opacity='0.4';});
     row.addEventListener('dragend',()=>{row.style.opacity='1';list.querySelectorAll('.course-row').forEach(r=>r.style.borderTop='');});
     row.addEventListener('dragover',e=>{e.preventDefault();list.querySelectorAll('.course-row').forEach(r=>r.style.borderTop='');if(row!==dragSrc)row.style.borderTop='2px solid var(--brand)';});
@@ -1864,6 +1910,18 @@ window.saveWordSort=async function(cid,btn){
     setTimeout(()=>modal.remove(),800);
   }catch(e){msg.style.color='var(--danger)';msg.textContent='失敗：'+e.message;}
 };
+window.editCourseName=async function(id,currentName){
+  const newName=prompt(`修改課程名稱：`,currentName);
+  if(newName===null)return;
+  const name=newName.trim();
+  if(!name){alert('名稱不能為空');return;}
+  try{
+    await updateOne('courses',id,{name});
+    const c=AC.find(x=>x.id===id);if(c)c.name=name;
+    renderAdminCourses();updateIC();updateFC();
+  }catch(e){alert('修改失敗：'+e.message);}
+};
+
 window.deleteCourse=async function(id){
   if(!confirm('刪除課程將同時刪除所有相關單字，確定繼續？'))return;
   const ws=AW.filter(w=>w.cid===id);
