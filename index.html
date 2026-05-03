@@ -764,56 +764,70 @@ function splitSyllables(word){
   const w = word.toLowerCase().trim();
   if(!w || w.length <= 2) return [word];
 
-  // ── Exception dictionary (high-school vocab + common irregular words) ──
   const EX = {
-    // 1-syllable exceptions (irregular spellings)
     'through':'through','though':'though','thought':'thought','brought':'brought',
     'friend':'friend','straight':'straight','clothes':'clothes','rhythm':'rhythm',
-    'strength':'strength','laugh':'laugh','cough':'cough','rough':'rough',
-    'tough':'tough','enough':'enough','bread':'bread','spread':'spread',
-    'health':'health','wealth':'wealth','breath':'breath','death':'death',
-    // 2-syllable
-    'every':'ev-ery','water':'wa-ter','paper':'pa-per','over':'o-ver',
-    'open':'o-pen','even':'e-ven','river':'riv-er','never':'nev-er',
-    'seven':'sev-en','human':'hu-man','sister':'sis-ter','tiger':'ti-ger',
-    'spider':'spi-der','garden':'gar-den','winter':'win-ter','summer':'sum-mer',
-    'butter':'but-ter','better':'bet-ter','letter':'let-ter','matter':'mat-ter',
-    'pattern':'pat-tern','happen':'hap-pen','chicken':'chick-en',
-    'kitchen':'kitch-en','often':'of-ten','listen':'lis-ten','button':'but-ton',
-    'cotton':'cot-ton','kitten':'kit-ten','mitten':'mit-ten','sudden':'sud-den',
+    'strength':'strength','laugh':'laugh','bread':'bread','health':'health',
+    'wealth':'wealth','breath':'breath','death':'death','rough':'rough',
+    'tough':'tough','enough':'enough','cough':'cough',
+    'water':'wa-ter','paper':'pa-per','over':'o-ver','open':'o-pen','even':'e-ven',
+    'river':'riv-er','never':'nev-er','seven':'sev-en','human':'hu-man',
+    'sister':'sis-ter','tiger':'ti-ger','spider':'spi-der','garden':'gar-den',
+    'winter':'win-ter','summer':'sum-mer','butter':'but-ter','better':'bet-ter',
+    'letter':'let-ter','matter':'mat-ter','pattern':'pat-tern','happen':'hap-pen',
+    'chicken':'chick-en','kitchen':'kitch-en','often':'of-ten','listen':'lis-ten',
+    'button':'but-ton','cotton':'cot-ton','kitten':'kit-ten','sudden':'sud-den',
     'hidden':'hid-den','modern':'mod-ern','system':'sys-tem','special':'spe-cial',
-    'people':'peo-ple','science':'sci-ence','machine':'ma-chine',
-    'country':'coun-try','money':'mon-ey','honey':'hon-ey','monkey':'mon-key',
-    'turkey':'tur-key','hockey':'hock-ey','valley':'val-ley','journey':'jour-ney',
-    'weather':'weath-er','teacher':'teach-er','mother':'moth-er','father':'fa-ther',
-    'brother':'broth-er','whether':'wheth-er','enter':'en-ter','equal':'e-qual',
+    'people':'peo-ple','science':'sci-ence','machine':'ma-chine','country':'coun-try',
+    'money':'mon-ey','honey':'hon-ey','monkey':'mon-key','turkey':'tur-key',
+    'journey':'jour-ney','weather':'weath-er','teacher':'teach-er',
+    'mother':'moth-er','father':'fa-ther','brother':'broth-er','enter':'en-ter',
     'table':'ta-ble','cable':'ca-ble','stable':'sta-ble','maple':'ma-ple',
     'fable':'fa-ble','able':'a-ble','apple':'ap-ple','simple':'sim-ple',
     'purple':'pur-ple','circle':'cir-cle','uncle':'un-cle','jungle':'jun-gle',
     'handle':'han-dle','candle':'can-dle','gentle':'gen-tle','little':'lit-tle',
     'bottle':'bot-tle','cattle':'cat-tle','battle':'bat-tle','settle':'set-tle',
     'middle':'mid-dle','riddle':'rid-dle','puzzle':'puz-zle','dazzle':'daz-zle',
-    'nation':'na-tion','action':'ac-tion','section':'sec-tion','mention':'men-tion',
-    'station':'sta-tion','lesson':'les-son','season':'sea-son','reason':'rea-son',
-    'person':'per-son','fashion':'fash-ion','passion':'pas-sion','mission':'mis-sion',
-    'vision':'vi-sion','ocean':'o-cean','begin':'be-gin','belong':'be-long',
-    'beyond':'be-yond','behind':'be-hind','below':'be-low','beside':'be-side',
-    'create':'cre-ate','because':'be-cause','ancient':'an-cient',
     'nature':'na-ture','future':'fu-ture','culture':'cul-ture','picture':'pic-ture',
     'mixture':'mix-ture','texture':'tex-ture','measure':'meas-ure',
     'treasure':'treas-ure','pleasure':'pleas-ure','leisure':'lei-sure',
     'mountain':'moun-tain','captain':'cap-tain','certain':'cer-tain',
-    'curtain':'cur-tain','fountain':'foun-tain','garden':'gar-den',
-    'lantern':'lan-tern','modern':'mod-ern','burden':'bur-den',
+    'curtain':'cur-tain','fountain':'foun-tain','lantern':'lan-tern',
     'number':'num-ber','center':'cen-ter','hundred':'hun-dred',
     'student':'stu-dent','problem':'prob-lem','program':'pro-gram',
-    // 3-syllable
+    'station':'sta-tion','nation':'na-tion','action':'ac-tion','ocean':'o-cean',
+    'lesson':'les-son','season':'sea-son','reason':'rea-son','person':'per-son',
+    'vision':'vi-sion','fashion':'fash-ion','passion':'pas-sion','mission':'mis-sion',
+    'begin':'be-gin','belong':'be-long','beyond':'be-yond','behind':'be-hind',
+    'below':'be-low','beside':'be-side','because':'be-cause','create':'cre-ate',
+    'ancient':'an-cient',
+    'harvest':'har-vest','prosper':'pros-per','master':'mas-ter','faster':'fast-er',
+    'basket':'bas-ket','blanket':'blan-ket','market':'mar-ket','pocket':'pock-et',
+    'rocket':'rock-et','ticket':'tick-et','jacket':'jack-et','racket':'rack-et',
+    'insect':'in-sect','object':'ob-ject','subject':'sub-ject','project':'pro-ject',
+    'protect':'pro-tect','perfect':'per-fect','collect':'col-lect','connect':'con-nect',
+    'correct':'cor-rect','select':'se-lect','expect':'ex-pect','respect':'re-spect',
+    'inspect':'in-spect','district':'dis-trict','instinct':'in-stinct',
+    'distinct':'dis-tinct','extinct':'ex-tinct','contract':'con-tract',
+    'contrast':'con-trast','construct':'con-struct','abstract':'ab-stract',
+    'substance':'sub-stance','constant':'con-stant','content':'con-tent',
+    'context':'con-text','contest':'con-test','control':'con-trol',
+    'consist':'con-sist','congress':'con-gress','concept':'con-cept',
+    'concern':'con-cern','confirm':'con-firm','conflict':'con-flict',
+    'conquer':'con-quer','consent':'con-sent','consider':'con-sid-er',
+    'consist':'con-sist','contact':'con-tact','contain':'con-tain',
+    'continue':'con-tin-ue','contribute':'con-trib-ute','convince':'con-vince',
+    'instant':'in-stant','instance':'in-stance','instead':'in-stead',
+    'install':'in-stall','inspire':'in-spire','express':'ex-press',
+    'explore':'ex-plore','explain':'ex-plain','extreme':'ex-treme',
+    'multiply':'mul-ti-ply','satisfy':'sat-is-fy','identify':'i-den-ti-fy',
+    'classify':'clas-si-fy','simplify':'sim-pli-fy','justify':'jus-ti-fy',
+    'magnify':'mag-ni-fy','qualify':'qual-i-fy','modify':'mod-i-fy',
     'family':'fam-i-ly','animal':'an-i-mal','natural':'nat-u-ral',
     'popular':'pop-u-lar','regular':'reg-u-lar','similar':'sim-i-lar',
     'general':'gen-er-al','camera':'cam-er-a','memory':'mem-o-ry',
-    'energy':'en-er-gy','history':'his-to-ry','mystery':'mys-ter-y',
-    'victory':'vic-to-ry','library':'li-brar-y','battery':'bat-ter-y',
-    'lottery':'lot-ter-y','delivery':'de-liv-er-y',
+    'energy':'en-er-gy','history':'his-to-ry','library':'li-brar-y',
+    'mystery':'mys-ter-y','victory':'vic-to-ry','battery':'bat-ter-y',
     'together':'to-geth-er','another':'an-oth-er','computer':'com-pu-ter',
     'tomorrow':'to-mor-row','umbrella':'um-brel-la','remember':'re-mem-ber',
     'important':'im-por-tant','adventure':'ad-ven-ture','fantastic':'fan-tas-tic',
@@ -821,30 +835,23 @@ function splitSyllables(word){
     'beautiful':'beau-ti-ful','chocolate':'choc-o-late','restaurant':'res-tau-rant',
     'vegetable':'veg-e-ta-ble','comfortable':'com-for-ta-ble',
     'interesting':'in-ter-est-ing','different':'dif-fer-ent',
-    'between':'be-tween','before':'be-fore','about':'a-bout',
-    'above':'a-bove','across':'a-cross','again':'a-gain','agree':'a-gree',
-    'alone':'a-lone','along':'a-long','away':'a-way','aware':'a-ware',
-    'asleep':'a-sleep','afraid':'a-fraid','enjoy':'en-joy','entire':'en-tire',
+    'between':'be-tween','before':'be-fore','about':'a-bout','above':'a-bove',
+    'across':'a-cross','again':'a-gain','agree':'a-gree','alone':'a-lone',
+    'along':'a-long','away':'a-way','enjoy':'en-joy','entire':'en-tire',
     'attention':'at-ten-tion','intention':'in-ten-tion','direction':'di-rec-tion',
     'condition':'con-di-tion','position':'po-si-tion','tradition':'tra-di-tion',
     'suggestion':'sug-ges-tion','question':'ques-tion','permission':'per-mis-sion',
-    'extension':'ex-ten-sion',
-    // 4-syllable
+    'extension':'ex-ten-sion','section':'sec-tion','mention':'men-tion',
     'information':'in-for-ma-tion','education':'ed-u-ca-tion',
     'situation':'sit-u-a-tion','population':'pop-u-la-tion',
     'competition':'com-pe-ti-tion','celebration':'cel-e-bra-tion',
-    'invitation':'in-vi-ta-tion','graduation':'grad-u-a-tion',
-    'imagination':'i-mag-i-na-tion','organization':'or-gan-i-za-tion',
     'environment':'en-vi-ron-ment','experiment':'ex-per-i-ment',
     'development':'de-vel-op-ment','government':'gov-ern-ment',
-    'entertainment':'en-ter-tain-ment','communication':'com-mu-ni-ca-tion',
-    'particular':'par-tic-u-lar','familiar':'fa-mil-iar','original':'o-rig-i-nal',
-    // compound / special
-    'classmate':'class-mate','teammate':'team-mate','homework':'home-work',
-    'bedroom':'bed-room','bathroom':'bath-room','classroom':'class-room',
-    'birthday':'birth-day','sunshine':'sun-shine','sometimes':'some-times',
+    'communication':'com-mu-ni-ca-tion','imagination':'i-mag-i-na-tion',
+    'particular':'par-tic-u-lar','familiar':'fa-mil-iar',
+    'classmate':'class-mate','homework':'home-work','birthday':'birth-day',
     'everything':'ev-ery-thing','somewhere':'some-where','anywhere':'any-where',
-    'everything':'ev-ery-thing',
+    'every':'ev-ery',
   };
 
   if(EX[w]){
@@ -853,37 +860,16 @@ function splitSyllables(word){
     return parts;
   }
 
-  // ── Algorithmic splitting ──
   const VOWELS_SET = new Set([...'aeiouy']);
   const DIPHTHONGS = new Set(['ai','ay','ea','ee','ei','eu','ew','ey','ie','oa','oe','oi','oo','ou','ow','oy','ue','ui']);
   const DIGRAPHS   = ['ch','sh','th','wh','ph','gh','ck','ng','qu'];
-  const CLUSTERS   = ['bl','br','cl','cr','dr','fl','fr','gl','gr','pl','pr','sc','sk','sl','sm','sn','sp','st','sw','tr','tw','wr'];
+  // Onset clusters: these start a syllable (keep together with next vowel)
+  const ONSET_CL   = ['bl','br','cl','cr','dr','fl','fr','gl','gr','pl','pr','sc','sk','sl','sm','sn','sp','st','sw','tr','tw','wr','str','spr','spl','scr'];
 
-  // Rule: word ending in C+e with only two vowel letters = silent-e = 1 syllable (e.g. smile, drive, stone)
+  // Silent-e rule: C+e ending, only 2 vowel letters total = 1 syllable
   const vowelChars = [...w].filter(c => VOWELS_SET.has(c));
   if(w.endsWith('e') && !VOWELS_SET.has(w[w.length-2]) && vowelChars.length <= 2){
     return [word];
-  }
-
-  // Orderly prefix list (longer first to avoid greedy mismatch)
-  const PREFIXES = ['over','under','super','trans','anti','auto','fore','mid','sub','non',
-                    'mis','dis','pre','out','bi','co','de','re','un','up','ex','in','im','ir','il'];
-  const SUFFIXES = ['tion','sion','ture','ious','ous','ful','less','ness','ment','ance','ence',
-                    'able','ible','ary','ery','ory','ity','ive','ize','ise','ing','er','est',
-                    'ly','al','ic','ish','ed'];
-
-  let prefix = '', stem = w;
-  for(const p of PREFIXES){
-    if(w.startsWith(p) && w.length > p.length + 2){
-      prefix = p; stem = w.slice(p.length); break;
-    }
-  }
-  let suffix = '', base = stem;
-  for(const s of SUFFIXES){
-    if(stem.endsWith(s) && stem.length > s.length + 2){
-      const b2 = stem.slice(0, stem.length - s.length);
-      if([...b2].some(c => VOWELS_SET.has(c))){ suffix = s; base = b2; break; }
-    }
   }
 
   function splitCore(s){
@@ -892,7 +878,6 @@ function splitSyllables(word){
     while(i < s.length){
       cur += s[i];
       if(VOWELS_SET.has(s[i]) && i + 1 < s.length){
-        // collect consonants until next vowel
         let j = i + 1, cons = '';
         while(j < s.length && !VOWELS_SET.has(s[j])){ cons += s[j]; j++; }
         const hasNextVowel = j < s.length;
@@ -901,22 +886,29 @@ function splitSyllables(word){
             // VV: split unless diphthong
             if(!DIPHTHONGS.has(s[i] + s[i+1])){ res.push(cur); cur = ''; }
           } else if(cons.length === 1){
-            // VC-V: consonant goes with next syllable
+            // V-CV: single consonant goes with next syllable
             res.push(cur); cur = '';
           } else {
-            // VCC+V: determine split point
+            // VCC+V: find best split point
+            // Strategy: find longest onset cluster or digraph that can start the next syllable,
+            // split just before it.
+            let splitAfter = 1; // default: split after first consonant (VC-CV)
+            // Check if cons[1..] starts with an onset cluster → split before it
+            for(const cl of ONSET_CL.sort((a,b)=>b.length-a.length)){
+              if(cons.slice(1).startsWith(cl)){
+                splitAfter = 1; break;
+              }
+            }
+            // Check if cons starts with a digraph → digraph belongs to LEFT syllable
             const startsDigraph = DIGRAPHS.some(d => cons.startsWith(d));
-            const endsCluster   = CLUSTERS.some(c => cons.endsWith(c));
-            if(startsDigraph){
-              // digraph belongs to left syllable (e.g. with-draw → with-draw)
+            if(startsDigraph && cons.length === 2){
+              // e.g. "with-draw": digraph+single = keep digraph left
+              cur += cons[0] + cons[1]; res.push(cur); cur = ''; i += cons.length - 1;
+            } else if(startsDigraph){
               cur += cons[0]; res.push(cur); cur = ''; i += 1;
-            } else if(endsCluster){
-              // cluster stays with right syllable (e.g. hand-some → hand-some... wait)
-              // keep cluster with next syllable: split before cluster
-              res.push(cur); cur = '';
             } else {
-              // split after first consonant
-              cur += cons[0]; res.push(cur); cur = ''; i += cons.length - 1;
+              // Standard VC-CV: split after splitAfter consonants
+              cur += cons.slice(0, splitAfter); res.push(cur); cur = ''; i += cons.length - 1;
             }
           }
         }
@@ -927,15 +919,10 @@ function splitSyllables(word){
     return res.filter(x => x.length > 0);
   }
 
-  const coreParts = splitCore(base);
-  const allParts = [];
-  if(prefix) allParts.push(prefix);
-  allParts.push(...coreParts);
-  if(suffix) allParts.push(suffix);
-
+  const parts = splitCore(w);
   // Restore original casing
   let pos = 0;
-  return allParts.map(p => { const orig = word.slice(pos, pos + p.length); pos += p.length; return orig || p; });
+  return parts.map(p => { const orig = word.slice(pos, pos + p.length); pos += p.length; return orig || p; });
 }
 function getSyllables(word){
   const key = word.toLowerCase().trim();
