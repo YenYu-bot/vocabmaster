@@ -239,7 +239,10 @@ async function selectClass(cid) {
         getOne('class_settings', otherId),
         getOne('daily_plan', otherId+'_'+todayStr())
       ]);
-      const otherAC = cs.filter(c=>c.classId===otherId).sort((a,b)=>(a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0));
+      const otherAC = cs.filter(c=>{
+        if(Array.isArray(c.classIds)) return c.classIds.includes(otherId);
+        return c.classId===otherId;
+      }).sort((a,b)=>(a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0));
       const otherAW = ws.filter(w=>otherAC.some(c=>c.id===w.cid)).sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
       const settings = sDoc ? { newWordsPerDay: sDoc.newWordsPerDay||20, startDate: sDoc.startDate||todayStr(), dailyLimit: sDoc.dailyLimit||20 } : { newWordsPerDay:20, startDate:todayStr(), dailyLimit:20 };
       settings.todayPlan = pDoc||null;
@@ -285,7 +288,11 @@ async function loadAllForClass(cid) {
     getOne('class_settings', cid),
     getOne('daily_plan', cid + '_' + todayStr())
   ]);
-  AC = cs.filter(c => c.classId===cid).sort((a,b) => (a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0));
+  AC = cs.filter(c => {
+    // support both old classId (string) and new classIds (array)
+    if(Array.isArray(c.classIds)) return c.classIds.includes(cid);
+    return c.classId===cid;
+  }).sort((a,b) => (a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0));
   AW = ws.filter(w => AC.some(c=>c.id===w.cid)).sort((a,b)=>(a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0));
   if (settingsDoc) {
     APP_SETTINGS = { dailyLimit: settingsDoc.dailyLimit||20, newWordsPerDay: settingsDoc.newWordsPerDay||20, startDate: settingsDoc.startDate||todayStr() };
@@ -306,7 +313,10 @@ async function loadAllForAdmin() {
   } else {
     // normal admin: only see assigned classes
     const assignedClasses = CU.assignedClasses || [];
-    AC = cs.filter(c=>!c.classId||assignedClasses.includes(c.classId)).sort((a,b)=>(a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0));
+    AC = cs.filter(c=>{
+      if(Array.isArray(c.classIds)) return c.classIds.some(cid=>assignedClasses.includes(cid));
+      return !c.classId||assignedClasses.includes(c.classId);
+    }).sort((a,b)=>(a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0));
   }
   AW = ws.sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
 }
@@ -1741,9 +1751,11 @@ window.repairLegacyData = async function() {
   }
 
   // batch update courses
-  await Promise.all(legacyCourses.map(c =>
-    updateOne('courses', c.id, { classId: targetClassId })
-  ));
+  await Promise.all(legacyCourses.map(c => {
+    const existingIds=Array.isArray(c.classIds)?c.classIds:[];
+    const newClassIds=[...new Set([...existingIds,targetClassId])];
+    return updateOne('courses', c.id, { classId: targetClassId, classIds: newClassIds });
+  }));
 
   // reload AC to reflect changes
   const refreshed = await getAll('courses');
@@ -1876,8 +1888,8 @@ window.addCourse=async function(inputId){
   const classId=CURRENT_CLASS?.id||'';
   const id='c'+Date.now();
   try{
-    await setOne('courses',id,{id,name,classId,createdAt:Date.now()});
-    AC.push({id,name,classId,createdAt:Date.now()});inp.value='';
+    await setOne('courses',id,{id,name,classId,classIds:classId?[classId]:[],createdAt:Date.now()});
+    AC.push({id,name,classId,classIds:classId?[classId]:[],createdAt:Date.now()});inp.value='';
     window.toggleBox(inputId==='nc1-name'?'nc1':'nc2');
     updateIC();updateFC();renderAdminCourses();
   }catch(e){alert('新增失敗：'+e.message);}
@@ -1896,6 +1908,7 @@ async function renderAdminCourses(){
     row.innerHTML=`<div style="padding:0 8px 0 2px;cursor:grab;color:var(--muted);font-size:18px;user-select:none" title="拖曳排序">☰</div>
       <div style="flex:1"><div class="bold text-sm">${c.name}</div><div class="text-muted" style="font-size:12px">${ws.length} 個單字</div></div>
       ${isSA?`<button class="btn btn-sm" style="flex-shrink:0" onclick="editCourseName('${c.id}','${c.name.replace(/'/g,"\\'")}')">改名</button>`:''}
+      <button class="btn btn-sm" style="flex-shrink:0" onclick="manageCourseClasses('${c.id}')">指派班級</button>
       <button class="btn btn-sm" style="flex-shrink:0" onclick="openWordSort('${c.id}')">排序單字</button>
       <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger);flex-shrink:0" onclick="deleteCourse('${c.id}')">刪除</button>`;
     row.addEventListener('dragstart',e=>{dragSrc=row;e.dataTransfer.effectAllowed='move';row.style.opacity='0.4';});
@@ -1964,6 +1977,71 @@ window.saveWordSort=async function(cid,btn){
     setTimeout(()=>modal.remove(),800);
   }catch(e){msg.style.color='var(--danger)';msg.textContent='失敗：'+e.message;}
 };
+window.manageCourseClasses=async function(cid){
+  const course=AC.find(c=>c.id===cid);if(!course)return;
+  // get all existing classes
+  const allClasses=await getAll('classes');
+  // also add all from CLASS_STRUCTURE that might not exist yet
+  const allClassIds=[];
+  Object.entries(CLASS_STRUCTURE).forEach(([level,grades])=>{
+    grades.forEach(grade=>allClassIds.push({id:level+'-'+grade,label:level+' '+grade}));
+  });
+  // current assigned classes
+  const currentIds=Array.isArray(course.classIds)?course.classIds:(course.classId?[course.classId]:[]);
+  const modal=document.createElement('div');
+  modal.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px;width:100%;max-width:380px;max-height:85vh;overflow-y:auto">
+    <div class="bold mb8">📚 指派課程到班級</div>
+    <div class="text-muted mb12" style="font-size:13px">課程「${course.name}」可同時指派給多個班級</div>
+    <div style="margin-bottom:12px">
+      ${Object.entries(CLASS_STRUCTURE).map(([level,grades])=>`
+        <div class="bold text-sm mb8" style="color:var(--muted);margin-top:8px">${level}</div>
+        ${grades.map(grade=>{
+          const id=level+'-'+grade;
+          const cls=allClasses.find(c=>c.id===id);
+          const label=cls?.displayName||grade;
+          return `<label style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px;cursor:pointer">
+            <input type="checkbox" data-cid="${id}" ${currentIds.includes(id)?'checked':''} style="accent-color:var(--brand);width:16px;height:16px"/>
+            ${label}
+          </label>`;
+        }).join('')}`).join('')}
+    </div>
+    <div class="flex gap8">
+      <button class="btn btn-p" style="flex:1" onclick="saveCourseClasses('${cid}',this)">儲存</button>
+      <button class="btn" style="flex:1" onclick="this.closest('[style*=fixed]').remove()">取消</button>
+    </div>
+    <div id="cc-msg" style="margin-top:8px;font-size:13px"></div>
+  </div>`;
+  document.body.appendChild(modal);
+};
+
+window.saveCourseClasses=async function(cid,btn){
+  const modal=btn.closest('[style*=fixed]');
+  const checked=[...modal.querySelectorAll('input[type=checkbox]:checked')];
+  const classIds=checked.map(c=>c.dataset.cid);
+  const msg=modal.querySelector('#cc-msg');
+  msg.style.color='var(--muted)';msg.textContent='儲存中...';
+  try{
+    // ensure all selected classes exist in Firebase
+    const existingClasses=await getAll('classes');
+    await Promise.all(classIds.map(async id=>{
+      if(!existingClasses.find(c=>c.id===id)){
+        const[level,grade]=id.split('-');
+        await setOne('classes',id,{id,level,grade,createdAt:Date.now()});
+        if(!ALL_CLASSES.find(c=>c.id===id)) ALL_CLASSES.push({id,level,grade});
+      }
+    }));
+    // keep classId for backward compat (use first class)
+    const classId=classIds[0]||'';
+    await updateOne('courses',cid,{classIds,classId});
+    // update local AC
+    const c=AC.find(x=>x.id===cid);
+    if(c){c.classIds=classIds;c.classId=classId;}
+    msg.style.color='var(--success)';msg.textContent=`✓ 已指派到 ${classIds.length} 個班級！`;
+    setTimeout(()=>{modal.remove();renderAdminCourses();},800);
+  }catch(e){msg.style.color='var(--danger)';msg.textContent='失敗：'+e.message;}
+};
+
 window.editCourseName=async function(id,currentName){
   const newName=prompt(`修改課程名稱：`,currentName);
   if(newName===null)return;
