@@ -711,7 +711,49 @@ async function showSC(){
   imgEl.style.display='none'; imgEl.src='';
   const url=await fetchWordImage(w.en);
   if(url){imgEl.src=url;imgEl.style.display='block';}
+  // auto-speak if enabled
+  if(document.getElementById('auto-speak-toggle')?.checked){
+    setTimeout(()=>window.speakWord(w.en), 300);
+  }
 }
+
+// ── speech synthesis ─────────────────────────────────────────
+let speechVoice = null;
+function initSpeech(){
+  if(!window.speechSynthesis) return;
+  const setVoice = () => {
+    const voices = window.speechSynthesis.getVoices();
+    // prefer US English, then any English
+    speechVoice = voices.find(v=>v.lang==='en-US'&&v.localService)
+      || voices.find(v=>v.lang==='en-US')
+      || voices.find(v=>v.lang.startsWith('en'))
+      || null;
+  };
+  setVoice();
+  window.speechSynthesis.onvoiceschanged = setVoice;
+}
+initSpeech();
+
+window.speakWord = function(word){
+  if(!window.speechSynthesis||!word) return;
+  window.speechSynthesis.cancel(); // stop any ongoing speech
+  const utter = new SpeechSynthesisUtterance(word);
+  utter.lang = 'en-US';
+  utter.rate = 0.85;  // slightly slower for learning
+  utter.pitch = 1;
+  if(speechVoice) utter.voice = speechVoice;
+  window.speechSynthesis.speak(utter);
+  // visual feedback on button
+  const btn = document.getElementById('speak-btn');
+  if(btn){
+    btn.textContent = '🔊';
+    btn.style.color = 'var(--brand)';
+    btn.style.borderColor = 'var(--brand)';
+    utter.onend = () => {
+      if(btn){ btn.textContent = '🔈 發音'; btn.style.color = ''; btn.style.borderColor = ''; }
+    };
+  }
+};
 
 window.toggleNotebook=async function(){
   const w=SW[SI]; if(!w) return;
@@ -2707,7 +2749,11 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
       <button class="btn" id="forgot-btn" onclick="markForgot()" style="display:none;background:var(--dl);color:var(--danger);border-color:var(--danger)">忘記 ✗</button>
       <button class="btn" onclick="studyNav(1)">下一個 →</button>
     </div>
-    <div style="text-align:center;margin-bottom:12px">
+    <div class="flex gap8" style="justify-content:center;margin-bottom:12px">
+      <button class="btn btn-sm" id="speak-btn" onclick="speakWord(document.getElementById('study-en').textContent)" style="font-size:12px">🔈 發音</button>
+      <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;color:var(--muted)">
+        <input type="checkbox" id="auto-speak-toggle" style="accent-color:var(--brand);width:13px;height:13px"/>自動發音
+      </label>
       <button class="btn btn-sm" id="notebook-btn" onclick="toggleNotebook()" style="font-size:12px">📌 加入複習本</button>
     </div>
     <div class="progress-bar"><div class="progress-fill" id="study-bar" style="width:0%"></div></div>
