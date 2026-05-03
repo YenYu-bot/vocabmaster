@@ -2048,7 +2048,20 @@ async function renderAdminCourses(){
   const classLabel=document.getElementById('at-class-label');
   if(classLabel&&CURRENT_CLASS)classLabel.textContent=CURRENT_CLASS.level+' '+CURRENT_CLASS.grade;
   const q=(document.getElementById('course-search')?.value||'').toLowerCase().trim();
-  const baseList=courseGrouping?await getAll('courses'):AC;
+  // 分組模式：從 Firebase 載入全部課程（跨班級搜尋）
+  // 非分組模式：若有選班級，只顯示當前班級的 AC；若未選班級，顯示全部 AC（含全部課程）但搜尋依名稱過濾
+  let baseList;
+  if(courseGrouping){
+    baseList=await getAll('courses');
+  } else if(CURRENT_CLASS){
+    const cid=CURRENT_CLASS.id;
+    baseList=AC.filter(c=>{
+      if(Array.isArray(c.classIds))return c.classIds.includes(cid);
+      return c.classId===cid;
+    });
+  } else {
+    baseList=AC;
+  }
   const filtered=baseList.filter(c=>!q||c.name.toLowerCase().includes(q));
   if(!filtered.length){
     list.innerHTML=`<p class="text-muted text-sm" style="padding:8px">${q?'找不到「'+q+'」相關課程':'尚無課程'}</p>`;return;
