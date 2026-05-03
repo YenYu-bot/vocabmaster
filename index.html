@@ -2883,7 +2883,12 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
   </div>
 
   <div id="at-courses" style="display:none">
-    <div class="notice notice-i mb12">目前班級：<span id="at-class-label" class="bold">（未選擇）</span><br>請先從「班級管理」進入各班級設定課程</div>
+    <div class="notice notice-i mb8">目前班級：<span id="at-class-label" class="bold">（未選擇）</span><br>請先從「班級管理」進入各班級設定課程</div>
+    <div class="flex gap8 mb12">
+      <input id="course-search" class="mb0" placeholder="🔍 搜尋課程名稱..." style="flex:1"
+        oninput="renderAdminCourses()"/>
+      <button class="btn btn-sm" onclick="toggleCourseGrouping()" id="course-group-btn" style="white-space:nowrap">📂 依班級分組</button>
+    </div>
     <div id="admin-course-list"><div class="loading">載入中...</div></div>
     <button class="btn btn-p mt12" style="width:100%" onclick="toggleBox('nc2')">+ 新增課程</button>
     <div id="nc2" style="display:none;margin-top:12px">
