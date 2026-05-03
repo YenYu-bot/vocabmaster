@@ -1192,6 +1192,7 @@ async function renderAccountList(){
   const accounts=await getAll('accounts');
   const students=accounts.filter(a=>a.role==='student').sort((a,b)=>a.id.localeCompare(b.id));
   const admins=accounts.filter(a=>a.role==='admin');
+  const isSuperAdmin = CU.id === 'bhcst0001';
 
   // stats
   const total=students.length;
@@ -1238,7 +1239,6 @@ async function renderAccountList(){
   list.appendChild(tableDiv);
 
   // admin list (only show to superadmin)
-  const isSuperAdmin = CU.id === 'bhcst0001';
   if(isSuperAdmin){
     const adminListDiv=document.createElement('div');adminListDiv.className='card mt12';
     adminListDiv.innerHTML='<div class="bold text-sm mb8">老師帳號列表</div>';
@@ -1608,12 +1608,66 @@ async function renderClassList(){
         </div>
         ${cls?`<span class="tag tag-g">已建立</span>`:`<span class="tag" style="background:#f1f5f9;color:#94a3b8">未建立</span>`}
         ${CU?.id==='bhcst0001'?`<button class="btn btn-sm" onclick="editClassName('${classCid}','${cls?.displayName||grade}')">改名</button>`:''}
+        <button class="btn btn-sm" onclick="editClassThreshold('${classCid}')">升級條件</button>
         <button class="btn btn-sm btn-p" onclick="ensureClass('${level}','${grade}')">進入設定</button>
       </div>`;
     });
     section.innerHTML=html;list.appendChild(section);
   });
 }
+
+window.editClassThreshold=async function(cid){
+  const s=await getOne('class_settings',cid)||{};
+  const cls=ALL_CLASSES.find(c=>c.id===cid);
+  const label=cls?(cls.displayName||cls.level+' '+cls.grade):cid;
+  const modal=document.createElement('div');
+  modal.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px;width:100%;max-width:380px">
+    <div class="bold mb8">🎓 ${label} 升級門檻設定</div>
+    <div class="text-muted mb12" style="font-size:13px">設為 0 表示不設此條件</div>
+    <label>課程完成率門檻（%）</label>
+    <input type="number" id="tc-completion" min="0" max="100" value="${s.upgradeCompletion||0}" class="mb8"/>
+    <label>測驗平均正確率門檻（%）</label>
+    <input type="number" id="tc-accuracy" min="0" max="100" value="${s.upgradeAccuracy||0}" class="mb8"/>
+    <label>每日新單字數量</label>
+    <select id="tc-new-per-day" class="mb8">
+      ${[10,15,20,25,30].map(n=>`<option value="${n}" ${(s.newWordsPerDay||20)===n?'selected':''}>${n} 個</option>`).join('')}
+    </select>
+    <label>每日測驗題數（0 = 等於新單字數）</label>
+    <select id="tc-quiz-count" class="mb8">
+      ${[0,10,15,20,30,40,50].map(n=>`<option value="${n}" ${(s.quizCount||0)===n?'selected':''}>${n===0?'等於新單字數':n+' 題'}</option>`).join('')}
+    </select>
+    <div class="flex gap8 mt8">
+      <button class="btn btn-p" style="flex:1" onclick="saveClassThreshold('${cid}',this)">儲存</button>
+      <button class="btn" style="flex:1" onclick="this.closest('[style*=fixed]').remove()">取消</button>
+    </div>
+    <div id="tc-msg" style="margin-top:8px;font-size:13px"></div>
+  </div>`;
+  document.body.appendChild(modal);
+};
+
+window.saveClassThreshold=async function(cid,btn){
+  const modal=btn.closest('[style*=fixed]');
+  const completion=parseInt(modal.querySelector('#tc-completion').value)||0;
+  const accuracy=parseInt(modal.querySelector('#tc-accuracy').value)||0;
+  const newPerDay=parseInt(modal.querySelector('#tc-new-per-day').value)||20;
+  const quizCount=parseInt(modal.querySelector('#tc-quiz-count').value)||0;
+  const msg=modal.querySelector('#tc-msg');
+  msg.style.color='var(--muted)';msg.textContent='儲存中...';
+  try{
+    const existing=await getOne('class_settings',cid)||{};
+    await setOne('class_settings',cid,{...existing,upgradeCompletion:completion,upgradeAccuracy:accuracy,newWordsPerDay:newPerDay,dailyLimit:newPerDay,quizCount});
+    // update APP_SETTINGS if this is current class
+    if(CURRENT_CLASS?.id===cid){
+      APP_SETTINGS.upgradeCompletion=completion;
+      APP_SETTINGS.upgradeAccuracy=accuracy;
+      APP_SETTINGS.newWordsPerDay=newPerDay;
+      APP_SETTINGS.quizCount=quizCount;
+    }
+    msg.style.color='var(--success)';msg.textContent='✓ 已儲存！';
+    setTimeout(()=>modal.remove(),800);
+  }catch(e){msg.style.color='var(--danger)';msg.textContent='失敗：'+e.message;}
+};
 
 window.editClassName=async function(cid,currentName){
   const newName=prompt(`修改班級顯示名稱（不影響系統ID）：`,currentName);
