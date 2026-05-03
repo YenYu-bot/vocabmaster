@@ -723,7 +723,6 @@ async function showSC(){
   if(!w){document.getElementById('study-en').textContent='（此課程無單字）';return;}
   document.getElementById('flip-card').classList.remove('flipped');
   const enEl=document.getElementById('study-en');
-  enEl.textContent=w.en; // show immediately, then color
   renderSyllableWord(w.en, enEl, '28px');
   document.getElementById('study-pos').textContent=(w.phonetic?'['+w.phonetic+'] ':''+(w.pos||''));
   document.getElementById('study-zh').textContent=w.zh;
@@ -759,30 +758,170 @@ let speechVoice = null;
 const SYLLABLE_COLORS = ['#2563eb','#d97706','#16a34a','#9333ea','#dc2626','#0891b2'];
 const syllableCache = {}; // { word: ['syl','la','ble'] } — session cache
 
-async function fetchSyllables(word){
-  const key = word.toLowerCase().trim();
-  if(syllableCache[key]) return syllableCache[key];
-  try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({
-        model:'claude-sonnet-4-20250514',
-        max_tokens:100,
-        messages:[{role:'user',content:`Split the English word "${key}" into syllables. Reply ONLY with a JSON array of strings, no explanation. Example: classmate → ["class","mate"], beautiful → ["beau","ti","ful"]`}]
-      })
-    });
-    const data = await res.json();
-    const text = (data.content||[]).map(b=>b.text||'').join('').trim();
-    const clean = text.replace(/```json|```/g,'').trim();
-    const parts = JSON.parse(clean);
-    if(Array.isArray(parts) && parts.length){
-      syllableCache[key] = parts;
-      return parts;
+// Local syllable splitter based on standard English phonological rules
+// Handles: consonant clusters, digraphs, silent-e, vowel pairs, prefixes/suffixes
+function splitSyllables(word){
+  const w = word.toLowerCase().trim();
+  if(!w || w.length <= 2) return [word];
+
+  // Common compound words & exceptions dictionary
+  const EXCEPTIONS = {
+    'every':'ev-ery','family':'fam-i-ly','beautiful':'beau-ti-ful','create':'cre-ate',
+    'science':'sci-ence','because':'be-cause','people':'peo-ple','through':'through',
+    'though':'though','thought':'thought','friend':'friend','straight':'straight',
+    'clothes':'clothes','rhythm':'rhythm','system':'sys-tem','special':'spe-cial',
+    'ocean':'o-cean','ancient':'an-cient','machine':'ma-chine','mountain':'moun-tain',
+    'captain':'cap-tain','certain':'cer-tain','curtain':'cur-tain','fountain':'foun-tain',
+    'important':'im-por-tant','adventure':'ad-ven-ture','interesting':'in-ter-est-ing',
+    'different':'dif-fer-ent','comfortable':'com-for-ta-ble','vegetable':'veg-e-ta-ble',
+    'restaurant':'res-tau-rant','chocolate':'choc-o-late','camera':'cam-er-a',
+    'general':'gen-er-al','library':'li-brar-y','memory':'mem-o-ry','energy':'en-er-gy',
+    'history':'his-to-ry','mystery':'mys-ter-y','victory':'vic-to-ry','country':'coun-try',
+    'journey':'jour-ney','money':'mon-ey','honey':'hon-ey','monkey':'mon-key',
+    'turkey':'tur-key','hockey':'hock-ey','valley':'val-ley','alley':'al-ley',
+    'classmate':'class-mate','teammate':'team-mate','homework':'home-work',
+    'umbrella':'um-brel-la','fantastic':'fan-tas-tic','complete':'com-plete',
+    'example':'ex-am-ple','problem':'prob-lem','program':'pro-gram',
+    'animal':'an-i-mal','hospital':'hos-pi-tal','original':'o-rig-i-nal',
+    'natural':'nat-u-ral','popular':'pop-u-lar','regular':'reg-u-lar',
+    'similar':'sim-i-lar','familiar':'fa-mil-iar','particular':'par-tic-u-lar',
+    'experiment':'ex-per-i-ment','government':'gov-ern-ment','environment':'en-vi-ron-ment',
+    'development':'de-vel-op-ment','entertainment':'en-ter-tain-ment',
+    'communication':'com-mu-ni-ca-tion','information':'in-for-ma-tion',
+    'education':'ed-u-ca-tion','situation':'sit-u-a-tion','population':'pop-u-la-tion',
+    'organization':'or-gan-i-za-tion','imagination':'i-mag-i-na-tion',
+    'invitation':'in-vi-ta-tion','graduation':'grad-u-a-tion','celebration':'cel-e-bra-tion',
+    'competition':'com-pe-ti-tion','permission':'per-mis-sion','direction':'di-rec-tion',
+    'condition':'con-di-tion','position':'po-si-tion','tradition':'tra-di-tion',
+    'suggestion':'sug-ges-tion','question':'ques-tion','station':'sta-tion',
+    'action':'ac-tion','nation':'na-tion','mention':'men-tion','section':'sec-tion',
+    'intention':'in-ten-tion','attention':'at-ten-tion','extension':'ex-ten-sion',
+    'bedroom':'bed-room','bathroom':'bath-room','classroom':'class-room',
+    'birthday':'birth-day','sunshine':'sun-shine','sometimes':'some-times',
+    'everything':'ev-ery-thing','somewhere':'some-where','anywhere':'any-where',
+    'together':'to-geth-er','another':'an-oth-er','mother':'moth-er','father':'fa-ther',
+    'brother':'broth-er','whether':'wheth-er','leather':'leath-er','feather':'feath-er',
+    'weather':'weath-er','teacher':'teach-er','picture':'pic-ture','nature':'na-ture',
+    'future':'fu-ture','culture':'cul-ture','mixture':'mix-ture','texture':'tex-ture',
+    'measure':'meas-ure','treasure':'treas-ure','pleasure':'pleas-ure','leisure':'lei-sure',
+    'student':'stu-dent','hundred':'hun-dred','number':'num-ber','center':'cen-ter',
+    'winter':'win-ter','summer':'sum-mer','butter':'but-ter','better':'bet-ter',
+    'letter':'let-ter','bitter':'bit-ter','litter':'lit-ter','matter':'mat-ter',
+    'atter':'at-ter','pattern':'pat-tern','lantern':'lan-tern','modern':'mod-ern',
+    'garden':'gar-den','garden':'gar-den','orden':'or-den','burden':'bur-den',
+    'sudden':'sud-den','hidden':'hid-den','happen':'hap-pen','chicken':'chick-en',
+    'kitchen':'kitch-en','often':'of-ten','listen':'lis-ten','fasten':'fas-ten',
+    'button':'but-ton','cotton':'cot-ton','mitten':'mit-ten','kitten':'kit-ten',
+    'begin':'be-gin','belong':'be-long','between':'be-tween','beyond':'be-yond',
+    'before':'be-fore','behind':'be-hind','below':'be-low','beside':'be-side',
+    'about':'a-bout','above':'a-bove','across':'a-cross','again':'a-gain',
+    'afraid':'a-fraid','agree':'a-gree','alone':'a-lone','along':'a-long',
+    'asleep':'a-sleep','aware':'a-ware','away':'a-way',
+    'enjoy':'en-joy','entire':'en-tire','enter':'en-ter','equal':'e-qual',
+    'able':'a-ble','table':'ta-ble','cable':'ca-ble','fable':'fa-ble',
+    'stable':'sta-ble','maple':'ma-ple','apple':'ap-ple','simple':'sim-ple',
+    'purple':'pur-ple','circle':'cir-cle','uncle':'un-cle','jungle':'jun-gle',
+    'handle':'han-dle','candle':'can-dle','gentle':'gen-tle','little':'lit-tle',
+    'bottle':'bot-tle','cattle':'cat-tle','battle':'bat-tle','settle','set-tle',
+    'middle':'mid-dle','riddle':'rid-dle','puzzle':'puz-zle','dazzle':'daz-zle',
+  };
+
+  if(EXCEPTIONS[w]){
+    const parts = EXCEPTIONS[w].split('-');
+    // restore original casing for first char
+    if(word[0]===word[0].toUpperCase()) parts[0]=parts[0][0].toUpperCase()+parts[0].slice(1);
+    return parts;
+  }
+
+  // Algorithmic split using vowel-consonant patterns
+  const VOWELS = 'aeiouy';
+  const DIGRAPHS = ['ch','sh','th','wh','ph','gh','ck','ng','qu'];
+  const PREFIXES = ['un','re','pre','dis','mis','over','under','out','up','ex','in','im','ir','il','non','anti','auto','bi','co','de','fore','mid','sub','super','trans'];
+  const SUFFIXES = ['tion','sion','cian','ture','ous','ious','ful','less','ness','ment','ance','ence','ing','ed','er','est','ly','ity','ive','ize','ise','al','ic','ish','able','ible','ary','ery','ory'];
+
+  // Try prefix stripping
+  let prefix = '';
+  let stem = w;
+  for(const p of PREFIXES.sort((a,b)=>b.length-a.length)){
+    if(w.startsWith(p) && w.length > p.length+2){
+      prefix = p; stem = w.slice(p.length); break;
     }
-  } catch(e){}
-  syllableCache[key] = [key]; // fallback: whole word as one syllable
-  return [key];
+  }
+
+  // Try suffix stripping
+  let suffix = '';
+  let base = stem;
+  for(const s of SUFFIXES.sort((a,b)=>b.length-a.length)){
+    if(stem.endsWith(s) && stem.length > s.length+2){
+      // check that base still has a vowel
+      const b2 = stem.slice(0, stem.length-s.length);
+      if([...b2].some(c=>VOWELS.includes(c))){ suffix = s; base = b2; break; }
+    }
+  }
+
+  // Core VCV / VCCV splitting on base
+  function splitCore(s){
+    if(s.length<=3) return [s];
+    const result=[];
+    let i=0, cur='';
+    while(i<s.length){
+      cur+=s[i];
+      const isV=VOWELS.includes(s[i]);
+      // look ahead: if we have vowel then consonant(s) then vowel
+      if(isV && i+1<s.length){
+        // count following consonants before next vowel
+        let j=i+1, cons='';
+        while(j<s.length && !VOWELS.includes(s[j])){ cons+=s[j]; j++; }
+        const nextVowelIdx=j;
+        if(nextVowelIdx<s.length){
+          // check for digraph at split point
+          const isDigraph = DIGRAPHS.some(d=>cons.startsWith(d)||cons.endsWith(d));
+          if(cons.length===0){
+            // VV: split between them (but keep diphthongs)
+            const diphthongs=['ai','ay','ea','ee','ei','eu','ew','ey','ie','oa','oe','oi','oo','ou','ow','oy','ue','ui'];
+            if(!diphthongs.includes(s[i]+s[i+1])){ result.push(cur); cur=''; }
+          } else if(cons.length===1){
+            // VC-V: keep consonant with next syllable
+            result.push(cur); cur='';
+          } else if(cons.length>=2){
+            // VCC-V: split after first consonant (unless digraph/cluster)
+            const cluster=['bl','br','cl','cr','dr','fl','fr','gl','gr','pl','pr','sc','sk','sl','sm','sn','sp','st','sw','tr','tw'];
+            const endCluster = cluster.some(c=>cons.endsWith(c));
+            if(endCluster || isDigraph){
+              result.push(cur); cur='';
+            } else {
+              cur+=cons[0]; result.push(cur); cur=''; i+=cons.length-1;
+            }
+          }
+        }
+      }
+      i++;
+    }
+    if(cur) result.push(cur);
+    return result.filter(s=>s.length>0);
+  }
+
+  const coreParts = splitCore(base);
+  const allParts = [];
+  if(prefix) allParts.push(prefix);
+  allParts.push(...coreParts);
+  if(suffix) allParts.push(suffix);
+
+  // Restore original casing
+  let pos=0;
+  return allParts.map(p=>{
+    const orig = word.slice(pos, pos+p.length);
+    pos+=p.length;
+    return orig||p;
+  });
+}
+
+function getSyllables(word){
+  const key = word.toLowerCase().trim();
+  if(!syllableCache[key]){
+    syllableCache[key] = splitSyllables(word);
+  }
+  return syllableCache[key];
 }
 
 function syllableHTML(parts, fontSize){
@@ -792,12 +931,9 @@ function syllableHTML(parts, fontSize){
   ).join('');
 }
 
-// Render syllable-colored word into an element; falls back to plain text while loading
-async function renderSyllableWord(word, el, fontSize){
+function renderSyllableWord(word, el, fontSize){
   if(!word){ el.textContent=''; return; }
-  // show plain word immediately
-  el.textContent = word;
-  const parts = await fetchSyllables(word);
+  const parts = getSyllables(word);
   if(parts.length <= 1){ el.textContent = word; return; }
   el.innerHTML = syllableHTML(parts, fontSize);
 }
@@ -2059,24 +2195,10 @@ function updateIC(){
   sel.innerHTML='';
   AC.forEach(c=>{const o=document.createElement('option');o.value=c.id;o.textContent=c.name;sel.appendChild(o);});
 }
-// Batch-prefetch syllables for a list of words (up to 40 at a time) using one API call
-async function prefetchSyllables(words){
-  const uncached = [...new Set(words.map(w=>w.toLowerCase().trim()))].filter(w=>!syllableCache[w]);
-  if(!uncached.length) return;
-  const batch = uncached.slice(0,40); // limit per call
-  try{
-    const prompt = 'Split each English word into syllables. Reply ONLY with a JSON object mapping each word to its syllable array. No explanation.\nWords: ' + JSON.stringify(batch);
-    const res = await fetch('https://api.anthropic.com/v1/messages',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:800,messages:[{role:'user',content:prompt}]})
-    });
-    const data = await res.json();
-    const text = (data.content||[]).map(b=>b.text||'').join('').trim();
-    const clean = text.replace(/```json|```/g,'').trim();
-    const map = JSON.parse(clean);
-    Object.entries(map).forEach(([w,parts])=>{ if(Array.isArray(parts)&&parts.length) syllableCache[w.toLowerCase()]=parts; });
-  }catch(e){}
+// Pre-warm syllable cache for a list of words (local, instant)
+function prefetchSyllables(words){
+  words.forEach(w=>getSyllables(w));
+  return Promise.resolve();
 }
 
 window.renderWords=function(){
@@ -2085,14 +2207,8 @@ window.renderWords=function(){
   const list=document.getElementById('word-list');list.innerHTML='';
   const f=AW.filter(w=>(!q||w.en.toLowerCase().includes(q)||w.zh.includes(q))&&(!fc||w.cid===fc));
   if(!f.length){list.innerHTML='<p class="text-muted text-sm" style="padding:10px 0">無符合單字</p>';return;}
-  // kick off batch prefetch so syllable colors appear quickly
-  prefetchSyllables(f.map(w=>w.en)).then(()=>{
-    // re-color any already-rendered .en-word spans
-    list.querySelectorAll('.en-word[data-word]').forEach(sp=>{
-      const parts=syllableCache[sp.dataset.word.toLowerCase()];
-      if(parts&&parts.length>1) sp.innerHTML=syllableHTML(parts,'14px');
-    });
-  });
+  // pre-warm syllable cache (local, instant)
+  prefetchSyllables(f.map(w=>w.en));
   f.forEach(w=>{
     const c=AC.find(x=>x.id===w.cid);
     const row=document.createElement('div');row.style.cssText='display:flex;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid var(--border)';
@@ -2108,11 +2224,10 @@ window.renderWords=function(){
       <button class="btn btn-sm" style="flex-shrink:0" onclick="editWord('${w.id}')">編輯</button>
       <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger);flex-shrink:0" onclick="deleteWord('${w.id}')">刪除</button>`;
     list.appendChild(row);
-    // async syllable coloring
+    // syllable coloring (local, instant)
     const sp=row.querySelector('.en-word');
-    fetchSyllables(w.en).then(parts=>{
-      if(parts.length>1) sp.innerHTML=syllableHTML(parts,'14px');
-    });
+    const parts=getSyllables(w.en);
+    if(parts.length>1) sp.innerHTML=syllableHTML(parts,'14px');
   });
 };
 window.updateBatchBar=function(){
