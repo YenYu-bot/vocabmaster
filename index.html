@@ -119,7 +119,7 @@ window.doLogin = async function() {
       const doc = await getOne('accounts', accountId);
       if (!doc) { showErr(err, '帳號不存在：' + accountId); return; }
       if (doc.password !== password) { showErr(err, '密碼錯誤'); return; }
-      account = { id: doc.id, role: doc.role, name: doc.name, classes: doc.classes || [] };
+      account = { id: doc.id, role: doc.role, name: doc.name, classes: doc.classes || [], assignedClasses: doc.assignedClasses || [] };
     }
     CU = account;
     // load or create user learning data
@@ -165,10 +165,21 @@ window.doLogin = async function() {
     }
     err.style.display = 'none';
     if (CU.role === 'admin') {
+      const isSA = CU.id === 'bhcst0001';
       document.getElementById('admin-name').textContent = CU.name + ' (' + CU.id + ')';
+      document.getElementById('admin-role-tag').textContent = isSA ? '超級管理員' : '一般老師';
+      document.getElementById('admin-role-tag').className = isSA ? 'tag tag-a' : 'tag tag-b';
       await loadAllForAdmin();
       showScreen('s-admin');
-      adminTab('accounts', document.querySelector('#s-admin .tab'));
+      const isSuperAdm = CU.id === 'bhcst0001';
+      // hide accounts tab for normal admins
+      document.querySelectorAll('#s-admin .tab').forEach(tab=>{
+        if(tab.textContent.trim()==='帳號管理') tab.style.display = isSuperAdm ? '' : 'none';
+      });
+      const firstTab = isSuperAdm
+        ? document.querySelector('#s-admin .tab')
+        : document.querySelectorAll('#s-admin .tab')[1];
+      adminTab(isSuperAdm?'accounts':'classes', firstTab);
     } else {
       await enterStudentView();
     }
@@ -278,7 +289,14 @@ async function loadAllForClass(cid) {
 
 async function loadAllForAdmin() {
   const [cs, ws] = await Promise.all([getAll('courses'), getAll('words')]);
-  AC = cs.sort((a,b)=>(a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0));
+  const isSuperAdmin = CU.id === 'bhcst0001';
+  if(isSuperAdmin){
+    AC = cs.sort((a,b)=>(a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0));
+  } else {
+    // normal admin: only see assigned classes
+    const assignedClasses = CU.assignedClasses || [];
+    AC = cs.filter(c=>!c.classId||assignedClasses.includes(c.classId)).sort((a,b)=>(a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0));
+  }
   AW = ws.sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
 }
 
@@ -1198,13 +1216,62 @@ async function renderAccountList(){
   }
   list.appendChild(tableDiv);
 
-  // create admin form
-  const adminForm=document.createElement('div');adminForm.className='card mt12';
-  adminForm.innerHTML=`<div class="bold text-sm mb8">建立老師帳號</div>
-    <label>顯示名稱</label><input id="new-admin-name" placeholder="例：陳老師" class="mb8"/>
-    <button class="btn btn-p" style="width:100%" onclick="createAdmin()">建立老師帳號</button>
-    <div id="create-admin-msg" style="margin-top:8px;font-size:13px"></div>`;
-  list.appendChild(adminForm);
+  // admin list (only show to superadmin)
+  const isSuperAdmin = CU.id === 'bhcst0001';
+  if(isSuperAdmin){
+    const adminListDiv=document.createElement('div');adminListDiv.className='card mt12';
+    adminListDiv.innerHTML='<div class="bold text-sm mb8">老師帳號列表</div>';
+    // add system admin row
+    const sysRow=document.createElement('div');
+    sysRow.style.cssText='display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)';
+    sysRow.innerHTML=`<div style="flex:1">
+      <div class="flex gap8"><span class="bold text-sm">bhcst0001</span><span class="tag tag-a" style="font-size:11px">超級管理員</span></div>
+      <div class="text-muted" style="font-size:12px">系統預設帳號・可管理所有班級</div>
+    </div>`;
+    adminListDiv.appendChild(sysRow);
+    // other admins
+    const otherAdmins=admins.filter(a=>a.id!=='bhcst0001');
+    if(!otherAdmins.length){
+      const noAdmin=document.createElement('p');noAdmin.className='text-muted text-sm';noAdmin.style.padding='8px 0';noAdmin.textContent='尚無其他老師帳號';
+      adminListDiv.appendChild(noAdmin);
+    } else {
+      otherAdmins.sort((a,b)=>a.id.localeCompare(b.id)).forEach(a=>{
+        const row=document.createElement('div');
+        row.style.cssText='display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)';
+        const assigned=(a.assignedClasses||[]).map(cid=>{
+          const parts=cid.split('-'); return parts.join(' ');
+        }).join('、')||'未分派班級';
+        row.innerHTML=`<div style="flex:1">
+          <div class="flex gap8"><span class="bold text-sm">${a.id}</span><span class="text-muted text-sm">${a.name||'（無名稱）'}</span></div>
+          <div class="text-muted" style="font-size:12px">負責班級：${assigned}</div>
+        </div>
+        <button class="btn btn-sm" onclick="manageAdminClass('${a.id}')">分派班級</button>
+        <button class="btn btn-sm" onclick="resetPassword('${a.id}')">重設密碼</button>
+        <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deleteAccount('${a.id}')">刪除</button>`;
+        adminListDiv.appendChild(row);
+      });
+    }
+    list.appendChild(adminListDiv);
+
+    // create admin form (superadmin only)
+    const adminForm=document.createElement('div');adminForm.className='card mt12';
+    adminForm.innerHTML=`<div class="bold text-sm mb8">建立老師帳號</div>
+      <label>顯示名稱</label><input id="new-admin-name" placeholder="例：陳老師" class="mb8"/>
+      <label>分派班級（可多選，之後可修改）</label>
+      <div id="new-admin-classes" style="border:1px solid var(--border);border-radius:8px;padding:8px;margin-bottom:10px;max-height:150px;overflow-y:auto">
+        ${Object.entries(CLASS_STRUCTURE).map(([level,grades])=>
+          grades.map(grade=>{
+            const cid=level+'-'+grade;
+            return `<label style="display:flex;align-items:center;gap:6px;padding:2px 0;font-size:13px;cursor:pointer">
+              <input type="checkbox" data-cid="${cid}" style="accent-color:var(--brand);width:14px;height:14px"/> ${level} ${grade}
+            </label>`;
+          }).join('')
+        ).join('')}
+      </div>
+      <button class="btn btn-p" style="width:100%" onclick="createAdmin()">建立老師帳號</button>
+      <div id="create-admin-msg" style="margin-top:8px;font-size:13px"></div>`;
+    list.appendChild(adminForm);
+  }
 
   // migrate tool
   const migrateForm=document.createElement('div');migrateForm.className='card mt12';
@@ -1368,11 +1435,56 @@ window.createAdmin=async function(){
   msg.style.color='var(--muted)';msg.textContent='建立中...';
   try{
     const id=await getNextAccountId('admin');
-    await setOne('accounts',id,{password:'123',role:'admin',name,createdAt:Date.now()});
+    // get assigned classes from checkboxes
+    const checked=[...document.querySelectorAll('#new-admin-classes input[type=checkbox]:checked')];
+    const assignedClasses=checked.map(c=>c.dataset.cid);
+    await setOne('accounts',id,{password:'123',role:'admin',name,assignedClasses,createdAt:Date.now()});
     msg.style.color='var(--success)';msg.textContent=`✓ 老師帳號 ${id} 建立完成！密碼：123`;
     document.getElementById('new-admin-name').value='';
     renderAccountList();
   }catch(e){msg.style.color='var(--danger)';msg.textContent='建立失敗：'+e.message;}
+};
+
+// ── manage admin class assignment ─────────────────────────────
+window.manageAdminClass=async function(id){
+  const account=await getOne('accounts',id);
+  if(!account){alert('找不到帳號');return;}
+  const currentClasses=account.assignedClasses||[];
+  const checkboxes=Object.entries(CLASS_STRUCTURE).map(([level,grades])=>
+    grades.map(grade=>{
+      const cid=level+'-'+grade;
+      return `<label style="display:flex;align-items:center;gap:6px;padding:4px 0;font-size:13px;cursor:pointer">
+        <input type="checkbox" data-cid="${cid}" ${currentClasses.includes(cid)?'checked':''} style="accent-color:var(--brand);width:16px;height:16px"/>
+        ${level} ${grade}
+      </label>`;
+    }).join('')
+  ).join('');
+  const modal=document.createElement('div');
+  modal.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px;width:100%;max-width:360px;max-height:80vh;overflow-y:auto">
+    <div class="bold mb8">分派班級給 ${account.name||id}</div>
+    <div class="text-muted mb12" style="font-size:13px">勾選此老師負責管理的班級</div>
+    <div>${checkboxes}</div>
+    <div class="flex gap8 mt12">
+      <button class="btn btn-p" style="flex:1" onclick="saveAdminClasses('${id}',this)">儲存</button>
+      <button class="btn" style="flex:1" onclick="this.closest('[style*=fixed]').remove()">取消</button>
+    </div>
+    <div id="admin-class-msg" style="margin-top:8px;font-size:13px"></div>
+  </div>`;
+  document.body.appendChild(modal);
+};
+
+window.saveAdminClasses=async function(id,btn){
+  const modal=btn.closest('[style*=fixed]');
+  const checked=[...modal.querySelectorAll('input[type=checkbox]:checked')];
+  const assignedClasses=checked.map(c=>c.dataset.cid);
+  const msg=modal.querySelector('#admin-class-msg');
+  msg.style.color='var(--muted)';msg.textContent='儲存中...';
+  try{
+    await updateOne('accounts',id,{assignedClasses});
+    msg.style.color='var(--success)';msg.textContent='✓ 已儲存！';
+    setTimeout(()=>{modal.remove();renderAccountList();},800);
+  }catch(e){msg.style.color='var(--danger)';msg.textContent='失敗：'+e.message;}
 };
 
 window.resetPassword=async function(id){
@@ -1798,6 +1910,8 @@ window.renderStudentList=async function(){
   list.innerHTML='<div class="loading">載入中...</div>';
   const today=todayStr();
   // filter controls
+  const isSuperAdminView = CU.id === 'bhcst0001';
+  const assignedClassesView = CU.assignedClasses || [];
   const filterClass=document.getElementById('filter-stu-class')?.value||'';
   const filterFrom=document.getElementById('filter-date-from')?.value||'';
   const filterTo=document.getElementById('filter-date-to')?.value||today;
@@ -1807,8 +1921,13 @@ window.renderStudentList=async function(){
   const isManualPlan=!!(APP_SETTINGS.todayPlan?.wordIds?.length);
   let allUsers=(await getAll('users')).filter(u=>u.role!=='admin');
   // filter by class
+  const accounts=await getAll('accounts');
+  if(!isSuperAdminView&&assignedClassesView.length>0){
+    // normal admin: only see students in assigned classes
+    const inAssigned=new Set(accounts.filter(a=>(a.classes||[]).some(c=>assignedClassesView.includes(c))).map(a=>a.id));
+    allUsers=allUsers.filter(u=>inAssigned.has(u.id));
+  }
   if(filterClass){
-    const accounts=await getAll('accounts');
     const inClass=new Set(accounts.filter(a=>(a.classes||[]).includes(filterClass)).map(a=>a.id));
     allUsers=allUsers.filter(u=>inClass.has(u.id));
   }
@@ -2226,7 +2345,10 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
   <div class="header">
     <div class="flex gap8">
       <div class="avatar" style="background:var(--wl);color:var(--warn)">師</div>
-      <div><div class="bold" id="admin-name">老師</div><div class="text-muted" style="font-size:12px">管理者模式</div></div>
+      <div>
+        <div class="flex gap8"><div class="bold" id="admin-name">老師</div><span id="admin-role-tag" class="tag tag-b">老師</span></div>
+        <div class="text-muted" style="font-size:12px">管理者模式</div>
+      </div>
     </div>
     <button class="btn btn-sm" onclick="logout()">登出</button>
   </div>
