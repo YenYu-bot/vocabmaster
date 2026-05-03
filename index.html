@@ -2011,30 +2011,82 @@ window.addCourse=async function(inputId){
     updateIC();updateFC();renderAdminCourses();
   }catch(e){alert('新增失敗：'+e.message);}
 };
+let courseGrouping=false;
+let collapsedGroups=new Set();
+window.toggleCourseGrouping=function(){
+  courseGrouping=!courseGrouping;
+  const btn=document.getElementById('course-group-btn');
+  if(btn){btn.style.background=courseGrouping?'var(--brand)':'';btn.style.color=courseGrouping?'#fff':'';btn.style.borderColor=courseGrouping?'var(--brand)':'';}
+  renderAdminCourses();
+};
+function makeCourseRow(c,container,dragRef){
+  const ws=AW.filter(w=>w.cid===c.id);
+  const row=document.createElement('div');row.className='course-row';row.draggable=true;row.dataset.id=c.id;
+  const isSA=CU?.id==='bhcst0001';
+  const classIds=Array.isArray(c.classIds)?c.classIds:(c.classId?[c.classId]:[]);
+  const classLabels=classIds.map(cid=>{const cls=ALL_CLASSES.find(x=>x.id===cid);return cls?(cls.displayName||cls.grade):cid;}).join('、');
+  row.innerHTML=`<div style="padding:0 8px 0 2px;cursor:grab;color:var(--muted);font-size:18px;user-select:none">☰</div>
+    <div style="flex:1"><div class="bold text-sm">${c.name}</div>
+    <div class="text-muted" style="font-size:12px">${ws.length} 個單字${classLabels?' · '+classLabels:''}</div></div>
+    ${isSA?`<button class="btn btn-sm" style="flex-shrink:0" onclick="editCourseName('${c.id}','${c.name.replace(/'/g,"\\'")}')">改名</button>`:''}
+    <button class="btn btn-sm" style="flex-shrink:0" onclick="manageCourseClasses('${c.id}')">指派班級</button>
+    <button class="btn btn-sm" style="flex-shrink:0" onclick="openWordSort('${c.id}')">排序單字</button>
+    <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger);flex-shrink:0" onclick="deleteCourse('${c.id}')">刪除</button>`;
+  row.addEventListener('dragstart',e=>{dragRef.v=row;e.dataTransfer.effectAllowed='move';row.style.opacity='0.4';});
+  row.addEventListener('dragend',()=>{row.style.opacity='1';document.querySelectorAll('.course-row').forEach(r=>r.style.borderTop='');});
+  row.addEventListener('dragover',e=>{e.preventDefault();document.querySelectorAll('.course-row').forEach(r=>r.style.borderTop='');if(row!==dragRef.v)row.style.borderTop='2px solid var(--brand)';});
+  row.addEventListener('dragleave',()=>{row.style.borderTop='';});
+  row.addEventListener('drop',async e=>{e.preventDefault();row.style.borderTop='';if(!dragRef.v||dragRef.v===row)return;
+    const si=AC.findIndex(x=>x.id===dragRef.v.dataset.id);const di=AC.findIndex(x=>x.id===row.dataset.id);
+    const[m]=AC.splice(si,1);AC.splice(di,0,m);
+    await Promise.all(AC.map((x,i)=>updateOne('courses',x.id,{sortOrder:i})));
+    renderAdminCourses();updateFC();updateIC();});
+  return row;
+}
 async function renderAdminCourses(){
   const list=document.getElementById('admin-course-list');list.innerHTML='';
   const classLabel=document.getElementById('at-class-label');
   if(classLabel&&CURRENT_CLASS)classLabel.textContent=CURRENT_CLASS.level+' '+CURRENT_CLASS.grade;
-  if(!AC.length){list.innerHTML='<p class="text-muted text-sm" style="padding:8px">尚無課程</p>';return;}
-  const hint=document.createElement('p');hint.className='text-muted text-sm mb8';hint.innerHTML='☰ 拖曳左側圖示可調整課程順序・點「排序單字」可調整課程內單字順序';list.appendChild(hint);
-  let dragSrc=null;
-  AC.forEach((c)=>{
-    const ws=AW.filter(w=>w.cid===c.id);
-    const row=document.createElement('div');row.className='course-row';row.draggable=true;row.dataset.id=c.id;
-    const isSA=CU?.id==='bhcst0001';
-    row.innerHTML=`<div style="padding:0 8px 0 2px;cursor:grab;color:var(--muted);font-size:18px;user-select:none" title="拖曳排序">☰</div>
-      <div style="flex:1"><div class="bold text-sm">${c.name}</div><div class="text-muted" style="font-size:12px">${ws.length} 個單字</div></div>
-      ${isSA?`<button class="btn btn-sm" style="flex-shrink:0" onclick="editCourseName('${c.id}','${c.name.replace(/'/g,"\\'")}')">改名</button>`:''}
-      <button class="btn btn-sm" style="flex-shrink:0" onclick="manageCourseClasses('${c.id}')">指派班級</button>
-      <button class="btn btn-sm" style="flex-shrink:0" onclick="openWordSort('${c.id}')">排序單字</button>
-      <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger);flex-shrink:0" onclick="deleteCourse('${c.id}')">刪除</button>`;
-    row.addEventListener('dragstart',e=>{dragSrc=row;e.dataTransfer.effectAllowed='move';row.style.opacity='0.4';});
-    row.addEventListener('dragend',()=>{row.style.opacity='1';list.querySelectorAll('.course-row').forEach(r=>r.style.borderTop='');});
-    row.addEventListener('dragover',e=>{e.preventDefault();list.querySelectorAll('.course-row').forEach(r=>r.style.borderTop='');if(row!==dragSrc)row.style.borderTop='2px solid var(--brand)';});
-    row.addEventListener('dragleave',()=>{row.style.borderTop='';});
-    row.addEventListener('drop',async e=>{e.preventDefault();row.style.borderTop='';if(!dragSrc||dragSrc===row)return;const srcId=dragSrc.dataset.id;const dstId=row.dataset.id;const srcIdx=AC.findIndex(c=>c.id===srcId);const dstIdx=AC.findIndex(c=>c.id===dstId);const[moved]=AC.splice(srcIdx,1);AC.splice(dstIdx,0,moved);await Promise.all(AC.map((c,i)=>updateOne('courses',c.id,{sortOrder:i})));renderAdminCourses();updateFC();updateIC();});
-    list.appendChild(row);
-  });
+  const q=(document.getElementById('course-search')?.value||'').toLowerCase().trim();
+  const baseList=courseGrouping?await getAll('courses'):AC;
+  const filtered=baseList.filter(c=>!q||c.name.toLowerCase().includes(q));
+  if(!filtered.length){
+    list.innerHTML=`<p class="text-muted text-sm" style="padding:8px">${q?'找不到「'+q+'」相關課程':'尚無課程'}</p>`;return;
+  }
+  const hint=document.createElement('p');hint.className='text-muted text-sm mb8';
+  hint.textContent=`共 ${filtered.length} 個課程${q?' · 搜尋：「'+q+'」':''}`;
+  list.appendChild(hint);
+  const dragRef={v:null};
+  if(courseGrouping){
+    const groups={};
+    filtered.forEach(c=>{
+      const cids=Array.isArray(c.classIds)?c.classIds:(c.classId?[c.classId]:[]);
+      if(!cids.length){(groups['未分類']=groups['未分類']||[]).push(c);}
+      else cids.forEach(cid=>{(groups[cid]=groups[cid]||[]).push(c);});
+    });
+    const keys=[...CLASS_PROGRESSION,'未分類'].filter(k=>groups[k]);
+    Object.keys(groups).forEach(k=>{if(!keys.includes(k))keys.push(k);});
+    keys.forEach(cid=>{
+      const courses=groups[cid];if(!courses?.length)return;
+      const cls=ALL_CLASSES.find(c=>c.id===cid);
+      const label=cid==='未分類'?'📂 未分類':cls?(cls.displayName||cls.level+' '+cls.grade):cid;
+      const isCollapsed=collapsedGroups.has(cid);
+      const hdr=document.createElement('div');
+      hdr.style.cssText='display:flex;align-items:center;gap:8px;padding:9px 10px;cursor:pointer;background:var(--bg);border-radius:8px;margin-bottom:4px;user-select:none';
+      hdr.innerHTML=`<span style="display:inline-block;transform:rotate(${isCollapsed?'-90deg':'0deg'});transition:transform 0.2s;font-size:13px">▾</span>
+        <span class="bold text-sm">${label}</span>
+        <span class="tag tag-b" style="font-size:11px">${courses.length} 個</span>`;
+      hdr.onclick=()=>{collapsedGroups.has(cid)?collapsedGroups.delete(cid):collapsedGroups.add(cid);renderAdminCourses();};
+      list.appendChild(hdr);
+      if(!isCollapsed){
+        const grp=document.createElement('div');grp.style.cssText='margin-bottom:10px;padding-left:10px;border-left:3px solid var(--border)';
+        courses.forEach(c=>grp.appendChild(makeCourseRow(c,grp,dragRef)));
+        list.appendChild(grp);
+      }
+    });
+  } else {
+    filtered.forEach(c=>list.appendChild(makeCourseRow(c,list,dragRef)));
+  }
 }
 
 window.openWordSort=function(cid){
