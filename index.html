@@ -41,6 +41,17 @@ const CLASS_STRUCTURE = {
   '國中': ['國一','國二','國三'],
   '高中': ['高一','高二','高三']
 };
+// progression order: flat list
+const CLASS_PROGRESSION = [
+  '國小-D級','國小-C級','國小-B級','國小-A級','國小-S級',
+  '國中-國一','國中-國二','國中-國三',
+  '高中-高一','高中-高二','高中-高三'
+];
+function getNextClass(cid) {
+  const idx = CLASS_PROGRESSION.indexOf(cid);
+  if(idx < 0 || idx >= CLASS_PROGRESSION.length-1) return null;
+  return CLASS_PROGRESSION[idx+1];
+}
 
 // ── state ─────────────────────────────────────────────────────
 let CU = null;           // current user account { id, name, role, classes:[] }
@@ -784,7 +795,16 @@ window.startMakeup=function(dateStr){
 
 function startDailyQuiz(){
   dailyPhase='quiz';
-  dailyQuizWords=shuffle([...SW]);
+  // use quizCount setting: if 0, use SW length; else use fixed count (may repeat words)
+  const quizCount=APP_SETTINGS.quizCount||0;
+  if(quizCount>0&&quizCount>SW.length){
+    // need more words than SW: repeat/shuffle to fill up
+    const base=shuffle([...SW]);
+    const extra=shuffle([...SW]);
+    dailyQuizWords=[...base,...extra].slice(0,quizCount);
+  } else {
+    dailyQuizWords=shuffle([...SW]).slice(0,quizCount>0?quizCount:SW.length);
+  }
   dailyQI=0;dailyQS=0;dailyQC=0;wrongWords=[];dailyRetryCount=0;
   const targetDate=makeupDate||todayStr();
   const dp={...(CU_DATA.daily_progress||{})};
@@ -1853,6 +1873,37 @@ window.deleteCourse=async function(id){
 };
 
 // ── student progress (admin) ──────────────────────────────────
+window.upgradeStudent=async function(uid,fromCid,toCid,btn){
+  const fromParts=fromCid.split('-');const toParts=toCid.split('-');
+  const fromLabel=fromParts.join(' ');const toLabel=toParts.join(' ');
+  if(!confirm(`確定將此學生從「${fromLabel}」升級到「${toLabel}」？
+
+舊班級資料會保留，學生將加入新班級。`))return;
+  btn.disabled=true;btn.textContent='升級中...';
+  try{
+    const acct=await getOne('accounts',uid);
+    if(!acct){alert('找不到帳號');return;}
+    const classes=acct.classes||[];
+    // remove old class, add new class
+    const newClasses=[...classes.filter(c=>c!==fromCid),toCid];
+    // ensure new class exists
+    if(!ALL_CLASSES.find(c=>c.id===toCid)){
+      const[level,grade]=toCid.split('-');
+      await setOne('classes',toCid,{id:toCid,level,grade,createdAt:Date.now()});
+      ALL_CLASSES.push({id:toCid,level,grade});
+    }
+    await updateOne('accounts',uid,{classes:newClasses,upgradedAt:Date.now(),upgradedFrom:fromCid});
+    // record upgrade in user data
+    const userData=await getOne('users',uid);
+    if(userData){
+      const upgradeHistory=[...(userData.upgradeHistory||[]),{from:fromCid,to:toCid,date:todayStr()}];
+      await updateOne('users',uid,{upgradeHistory});
+    }
+    alert(`✅ 升級完成！${toLabel} 班見！`);
+    window.showStudentList();window.renderStudentList();
+  }catch(e){alert('升級失敗：'+e.message);btn.disabled=false;btn.textContent='執行升級 →';}
+};
+
 window.showStudentList=function(){
   document.getElementById('stu-panel-title').textContent='所有學生';
   document.getElementById('stu-back-btn').style.display='none';
@@ -1975,7 +2026,7 @@ window.renderStudentList=async function(){
   });
 };
 
-function showStudentDetail(u){
+async function showStudentDetail(u){
   document.getElementById('stu-panel-title').textContent=(u.name||u.id)+' 的學習進度';
   document.getElementById('stu-back-btn').style.display='inline-flex';
   document.getElementById('student-list-view').style.display='none';
@@ -1985,6 +2036,50 @@ function showStudentDetail(u){
   const delBtn=document.createElement('button');delBtn.className='btn btn-sm mb12';delBtn.style.cssText='color:var(--danger);border-color:var(--danger);width:100%';delBtn.textContent='🗑 刪除此學生所有資料';
   delBtn.onclick=async()=>{if(!confirm('確定刪除「'+(u.name||u.id)+'」的所有學習記錄？'))return;await delOne('users',u.id);window.showStudentList();window.renderStudentList();};
   detail.appendChild(delBtn);
+
+  // upgrade check
+  const acct=await getOne('accounts',u.id);
+  const stuClasses=acct?.classes||[];
+  if(stuClasses.length>0){
+    const upgradeDiv=document.createElement('div');upgradeDiv.className='card mb12';
+    let upgradeHTML='<div class="bold text-sm mb8">🎓 升級管理</div>';
+    for(const cid of stuClasses){
+      const cls=ALL_CLASSES.find(c=>c.id===cid);
+      const nextCid=getNextClass(cid);
+      const nextCls=nextCid?ALL_CLASSES.find(c=>c.id===nextCid)||{id:nextCid,level:nextCid.split('-')[0],grade:nextCid.split('-')[1]}:null;
+      // get class settings for upgrade threshold
+      const clsSettings=await getOne('class_settings',cid);
+      const threshold={completion:clsSettings?.upgradeCompletion||0,accuracy:clsSettings?.upgradeAccuracy||0};
+      // calculate student's performance in this class
+      const clsAC=(await getAll('courses')).filter(c=>c.classId===cid);
+      const clsAW=(await getAll('words')).filter(w=>clsAC.some(c=>c.id===w.cid));
+      const totalWords=clsAW.length;
+      const learnedWords=clsAW.filter(w=>known[w.id]).length;
+      const completionPct=totalWords?Math.round(learnedWords/totalWords*100):0;
+      const totalAttempts=Object.values(qs).reduce((s,v)=>s+(v.attempts||0),0);
+      const totalCorrect=Object.values(qs).reduce((s,v)=>s+(v.correct||0),0);
+      const accuracyPct=totalAttempts?Math.round(totalCorrect/totalAttempts*100):0;
+      const meetsCompletion=threshold.completion===0||completionPct>=threshold.completion;
+      const meetsAccuracy=threshold.accuracy===0||accuracyPct>=threshold.accuracy;
+      const canUpgrade=meetsCompletion&&meetsAccuracy&&nextCid;
+      upgradeHTML+=`<div style="padding:10px 0;border-bottom:1px solid var(--border)">
+        <div class="flex gap8 mb8">
+          <span class="bold text-sm">${cls?cls.level+' '+cls.grade:cid}</span>
+          ${canUpgrade?'<span class="tag tag-g">✅ 達標可升級</span>':'<span class="tag" style="background:#f1f5f9;color:#94a3b8">未達標</span>'}
+        </div>
+        <div class="text-muted mb8" style="font-size:12px">
+          課程完成率：${completionPct}%${threshold.completion>0?' (門檻 '+threshold.completion+'%)':' (無門檻)'} ・
+          測驗正確率：${accuracyPct}%${threshold.accuracy>0?' (門檻 '+threshold.accuracy+'%)':' (無門檻)'}
+        </div>
+        ${nextCid?`<div class="flex gap8">
+          <span class="text-muted" style="font-size:12px">升級到：${nextCls?nextCls.level+' '+nextCls.grade:nextCid}</span>
+          ${canUpgrade?`<button class="btn btn-sm btn-p" onclick="upgradeStudent('${u.id}','${cid}','${nextCid}',this)">執行升級 →</button>`:''}
+        </div>`:'<span class="text-muted" style="font-size:12px">（已是最高班級）</span>'}
+      </div>`;
+    }
+    upgradeDiv.innerHTML=upgradeHTML;
+    detail.appendChild(upgradeDiv);
+  }
   const totalAttempts=Object.values(qs).reduce((s,v)=>s+(v.attempts||0),0);
   const totalCorrect=Object.values(qs).reduce((s,v)=>s+(v.correct||0),0);
   const quizPct=totalAttempts?Math.round(totalCorrect/totalAttempts*100):0;
@@ -2042,9 +2137,21 @@ function showStudentDetail(u){
 window.loadSettings=async function(){
   const cid=CURRENT_CLASS?.id;
   const s=cid?await getOne('class_settings',cid):null;
-  const sel=document.getElementById('setting-new-per-day');const sd=document.getElementById('setting-start-date');
-  if(s){if(sel)sel.value=s.newWordsPerDay||20;if(sd)sd.value=s.startDate||todayStr();}
-  else{if(sel)sel.value=20;if(sd)sd.value=todayStr();}
+  const sel=document.getElementById('setting-new-per-day');
+  const sd=document.getElementById('setting-start-date');
+  const qc=document.getElementById('setting-quiz-count');
+  const uc=document.getElementById('setting-upgrade-completion');
+  const ua=document.getElementById('setting-upgrade-accuracy');
+  if(s){
+    if(sel)sel.value=s.newWordsPerDay||20;
+    if(sd)sd.value=s.startDate||todayStr();
+    if(qc)qc.value=s.quizCount||0;
+    if(uc)uc.value=s.upgradeCompletion||0;
+    if(ua)ua.value=s.upgradeAccuracy||0;
+  } else {
+    if(sel)sel.value=20;if(sd)sd.value=todayStr();
+    if(qc)qc.value=0;if(uc)uc.value=0;if(ua)ua.value=0;
+  }
   const dayIdx=Math.max(0,Math.floor((new Date(todayStr())-new Date(APP_SETTINGS.startDate||todayStr()))/86400000));
   const perDay=APP_SETTINGS.newWordsPerDay||20;
   const infoEl=document.getElementById('settings-day-info');
@@ -2054,9 +2161,14 @@ window.loadSettings=async function(){
 window.saveSettings=async function(){
   const perDay=parseInt(document.getElementById('setting-new-per-day').value);
   const startDate=document.getElementById('setting-start-date').value||todayStr();
+  const quizCount=parseInt(document.getElementById('setting-quiz-count')?.value||'0');
+  const upgradeCompletion=parseInt(document.getElementById('setting-upgrade-completion')?.value||'0');
+  const upgradeAccuracy=parseInt(document.getElementById('setting-upgrade-accuracy')?.value||'0');
   const cid=CURRENT_CLASS?.id||'global';
-  await setOne('class_settings',cid,{newWordsPerDay:perDay,startDate,dailyLimit:perDay});
+  const settingsData={newWordsPerDay:perDay,startDate,dailyLimit:perDay,quizCount,upgradeCompletion,upgradeAccuracy};
+  await setOne('class_settings',cid,settingsData);
   APP_SETTINGS.newWordsPerDay=perDay;APP_SETTINGS.dailyLimit=perDay;APP_SETTINGS.startDate=startDate;
+  APP_SETTINGS.quizCount=quizCount;APP_SETTINGS.upgradeCompletion=upgradeCompletion;APP_SETTINGS.upgradeAccuracy=upgradeAccuracy;
   const msg=document.getElementById('settings-msg');msg.style.color='var(--success)';msg.textContent='✓ 設定已儲存！';
   setTimeout(()=>{msg.textContent='';renderTodayPlanPreview();},1500);
 };
@@ -2487,11 +2599,31 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
         <option value="10">10 個</option><option value="15">15 個</option>
         <option value="20" selected>20 個</option><option value="25">25 個</option><option value="30">30 個</option>
       </select>
+      <label>每日測驗題數（0 = 等於新單字數）</label>
+      <select id="setting-quiz-count" class="mb8">
+        <option value="0">等於每日新單字數</option>
+        <option value="10">固定 10 題</option>
+        <option value="15">固定 15 題</option>
+        <option value="20">固定 20 題</option>
+        <option value="30">固定 30 題</option>
+        <option value="40">固定 40 題</option>
+        <option value="50">固定 50 題</option>
+      </select>
       <label>課程起始日期</label>
       <input type="date" id="setting-start-date" class="mb8"/>
       <div id="settings-day-info" class="notice notice-i" style="font-size:12px;margin-bottom:12px"></div>
       <button class="btn btn-p" style="width:100%;margin-bottom:8px" onclick="saveSettings()">儲存設定</button>
       <div id="settings-msg" style="font-size:13px"></div>
+    </div>
+    <h3 class="mb12">升級門檻設定</h3>
+    <div class="card mb12">
+      <div class="text-muted mb12" style="font-size:13px">學生達到以下條件時，老師可在學生進度頁手動執行升級</div>
+      <label>課程完成率門檻（%）</label>
+      <input type="number" id="setting-upgrade-completion" min="0" max="100" placeholder="例：80" class="mb8"/>
+      <label>測驗平均正確率門檻（%）</label>
+      <input type="number" id="setting-upgrade-accuracy" min="0" max="100" placeholder="例：80" class="mb8"/>
+      <div class="text-muted mb12" style="font-size:12px">兩個條件都達到才會顯示「達標」標記。設為 0 表示不設此條件。</div>
+      <button class="btn btn-p" style="width:100%;margin-bottom:8px" onclick="saveSettings()">儲存設定</button>
     </div>
     <h3 class="mb8">今日任務預覽 / 手動指定</h3>
     <div class="card mb12">
