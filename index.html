@@ -1157,7 +1157,7 @@ async function fetchWordImage(word){
   const key=word.toLowerCase().split(' ')[0];
   if(imgCache[key]!==undefined)return imgCache[key];
   try{
-    const r=await fetch('https://api.unsplash.com/search/photos?query='+encodeURIComponent(key)+'&per_page=1&orientation=landscape&client_id=YpPAMHEVCgNql4bLuSCKDpwAoGJWSAOi_6_IpTDY5IY');
+    const r=await fetch('https://api.unsplash.com/search/photos?query='+encodeURIComponent(key)+'&per_page=1&orientation=landscape&client_id=QPyCknJ_Ep1CbPzqxYIz7Z6pLITJfD4RsZIgL_2GDA0');
     const d=await r.json();const url=d.results?.[0]?.urls?.small||'';imgCache[key]=url;return url;
   }catch{imgCache[key]='';return '';}
 }
