@@ -1214,6 +1214,10 @@ async function renderAccountList(){
     <code style="background:var(--bg);padding:2px 6px;border-radius:4px;font-size:12px">學號 → 舊姓名</code><br>
     例如：<code style="background:var(--bg);padding:2px 6px;border-radius:4px;font-size:12px">bhcs00001 → 王小明</code></div>
     <textarea id="migrate-text" rows="6" placeholder="bhcs00001 → 王小明&#10;bhcs00002 → 李小華&#10;bhcs00003 → 張大明"></textarea>
+    <label style="display:flex;align-items:center;gap:8px;margin-bottom:10px;cursor:pointer;font-size:13px">
+      <input type="checkbox" id="migrate-merge-mode" style="width:16px;height:16px;accent-color:var(--brand)"/>
+      <span>合併模式（已有新資料時，合併新舊資料而非略過）</span>
+    </label>
     <button class="btn btn-p" style="width:100%" onclick="batchMigrate()">開始遷移</button>
     <div id="migrate-msg" style="margin-top:8px;font-size:13px;white-space:pre-line"></div>`;
   list.appendChild(migrateForm);
@@ -1270,11 +1274,39 @@ window.createStudent=async function(){
   }catch(e){msg.style.color='var(--danger)';msg.textContent='建立失敗：'+e.message;}
 };
 
+function mergeUserData(oldData, newData) {
+  // merge known: union
+  const known = {...(oldData.known||{}), ...(newData.known||{})};
+  // merge score: sum
+  const score = (oldData.score||0) + (newData.score||0);
+  // merge sr: take higher level for each word
+  const sr = {...(oldData.sr||{})};
+  Object.entries(newData.sr||{}).forEach(([wid,newSR])=>{
+    const oldSR = sr[wid];
+    if(!oldSR || (newSR.level||0) > (oldSR.level||0)) sr[wid] = newSR;
+  });
+  // merge daily_progress: merge by date key
+  const daily_progress = {...(oldData.daily_progress||{}), ...(newData.daily_progress||{})};
+  // merge quiz_stats: add attempts and correct
+  const quiz_stats = {...(oldData.quiz_stats||{})};
+  Object.entries(newData.quiz_stats||{}).forEach(([wid,nqs])=>{
+    if(quiz_stats[wid]){
+      quiz_stats[wid]={attempts:(quiz_stats[wid].attempts||0)+(nqs.attempts||0), correct:(quiz_stats[wid].correct||0)+(nqs.correct||0)};
+    } else { quiz_stats[wid]=nqs; }
+  });
+  // merge completed_courses and achievements: union
+  const completed_courses=[...new Set([...(oldData.completed_courses||[]),...(newData.completed_courses||[])])];
+  const achievements=[...new Set([...(oldData.achievements||[]),...(newData.achievements||[])])];
+  const notebook=[...new Set([...(oldData.notebook||[]),...(newData.notebook||[])])];
+  const joinDate=oldData.joinDate||newData.joinDate||todayStr();
+  return {score,known,sr,daily_progress,quiz_stats,completed_courses,achievements,notebook,joinDate};
+}
+
 window.batchMigrate=async function(){
   const text=document.getElementById('migrate-text').value.trim();
+  const mergeMode=document.getElementById('migrate-merge-mode')?.checked||false;
   const msg=document.getElementById('migrate-msg');
   if(!text){msg.style.color='var(--danger)';msg.textContent='請輸入遷移對應';return;}
-  // parse lines: "bhcs00001 → 王小明" or "bhcs00001->王小明" or "bhcs00001 王小明"
   const pairs=[];
   text.split('\n').forEach(line=>{
     line=line.trim(); if(!line)return;
@@ -1289,33 +1321,40 @@ window.batchMigrate=async function(){
   const results=[];
   for(const {newId,oldName} of pairs){
     try{
-      // check new account exists
       const account=await getOne('accounts',newId);
       if(!account){results.push(`❌ ${newId}：帳號不存在`);continue;}
-      // get old data
       const oldData=await getOne('users',oldName);
       if(!oldData){results.push(`⚠️ ${newId} ← ${oldName}：找不到舊資料`);continue;}
-      // check if new account already has data
       const existing=await getOne('users',newId);
-      if(existing&&Object.keys(existing.known||{}).length>0){
-        results.push(`⚠️ ${newId}（${account.name}）：已有資料（已學 ${Object.keys(existing.known).length} 個），略過。若要覆蓋請先刪除學習記錄`);
+      const hasNew=existing&&Object.keys(existing.known||{}).length>0;
+      if(hasNew&&!mergeMode){
+        results.push(`⚠️ ${newId}（${account.name}）：已有資料（已學 ${Object.keys(existing.known).length} 個），略過。請勾選「合併模式」來合併新舊資料`);
         continue;
       }
-      // migrate
-      const allowedFields=['score','known','sr','completed_courses','daily_progress','quiz_stats','achievements','notebook','joinDate'];
-      const cleanData={};
-      allowedFields.forEach(k=>{if(oldData[k]!==undefined&&oldData[k]!==null)cleanData[k]=oldData[k];});
-      if(!cleanData.joinDate)cleanData.joinDate=oldData.createdAt?new Date(oldData.createdAt).toISOString().slice(0,10):todayStr();
-      if(!cleanData.score)cleanData.score=0;
-      if(!cleanData.known)cleanData.known={};
-      if(!cleanData.sr)cleanData.sr={};
-      if(!cleanData.completed_courses)cleanData.completed_courses=[];
-      if(!cleanData.daily_progress)cleanData.daily_progress={};
-      if(!cleanData.quiz_stats)cleanData.quiz_stats={};
-      if(!cleanData.achievements)cleanData.achievements=[];
-      await setOne('users',newId,cleanData);
-      const learnedCount=Object.keys(cleanData.known).length;
-      results.push(`✅ ${newId}（${account.name}） ← ${oldName}：遷移成功（已學 ${learnedCount} 個單字，積分 ${cleanData.score}）`);
+      let finalData;
+      if(hasNew&&mergeMode){
+        finalData=mergeUserData(oldData,existing);
+        const oldCount=Object.keys(oldData.known||{}).length;
+        const newCount=Object.keys(existing.known||{}).length;
+        const mergedCount=Object.keys(finalData.known).length;
+        results.push(`🔀 ${newId}（${account.name}）：合併完成（舊 ${oldCount} + 新 ${newCount} = 合併後 ${mergedCount} 個單字，積分 ${finalData.score}）`);
+      } else {
+        const allowedFields=['score','known','sr','completed_courses','daily_progress','quiz_stats','achievements','notebook','joinDate'];
+        finalData={};
+        allowedFields.forEach(k=>{if(oldData[k]!==undefined&&oldData[k]!==null)finalData[k]=oldData[k];});
+        if(!finalData.joinDate)finalData.joinDate=oldData.createdAt?new Date(oldData.createdAt).toISOString().slice(0,10):todayStr();
+        const learnedCount=Object.keys(finalData.known||{}).length;
+        results.push(`✅ ${newId}（${account.name}） ← ${oldName}：遷移成功（已學 ${learnedCount} 個單字，積分 ${finalData.score||0}）`);
+      }
+      // ensure required fields
+      if(!finalData.score)finalData.score=0;
+      if(!finalData.known)finalData.known={};
+      if(!finalData.sr)finalData.sr={};
+      if(!finalData.completed_courses)finalData.completed_courses=[];
+      if(!finalData.daily_progress)finalData.daily_progress={};
+      if(!finalData.quiz_stats)finalData.quiz_stats={};
+      if(!finalData.achievements)finalData.achievements=[];
+      await setOne('users',newId,finalData);
     }catch(e){results.push(`❌ ${newId}：發生錯誤 ${e.message}`);}
   }
   msg.style.color='var(--text)';
