@@ -357,13 +357,21 @@ async function removeFromNotebook(wid) {
   await updateOne('users',CU.id,{notebook:[...nb]});
 }
 
+function getSR(wid) {
+  // support both class-specific sr key and legacy global key
+  const sr=CU_DATA?.sr||{};
+  const cid=CURRENT_CLASS?.id||'';
+  const classKey=cid?cid+'_'+wid:wid;
+  return sr[classKey]||sr[wid]||null;
+}
 function getDailyWords() {
-  const today=todayStr(); const sr=CU_DATA?.sr||{};
+  const today=todayStr();
   const newIds=getStudentTodayNewWordIds();
   const newWords=newIds.map(id=>AW.find(w=>w.id===id)).filter(Boolean);
   const reviewWords=[];
   AC.forEach(c=>AW.filter(w=>w.cid===c.id).forEach(w=>{
-    if(sr[w.id]&&sr[w.id].nextDate<=today&&!newIds.includes(w.id)) reviewWords.push(w);
+    const srEntry=getSR(w.id);
+    if(srEntry&&srEntry.nextDate<=today&&!newIds.includes(w.id)) reviewWords.push(w);
   }));
   return [...newWords,...reviewWords];
 }
@@ -444,6 +452,19 @@ window.startNotebookQuiz=function(){
   showQ();
 };
 
+window.jumpToStudyWord=function(wid,cid){
+  // switch to study tab, select the course, navigate to word
+  const courseEl=document.getElementById('study-course');
+  if(courseEl){
+    courseEl.value=cid;
+    window.loadStudy();
+    // find word index
+    const idx=SW.findIndex(w=>w.id===wid);
+    if(idx>=0){SI=idx;showSC();}
+  }
+  stuTab('study',document.querySelectorAll('#s-student .tab')[1]);
+};
+
 window.renderStuSearch=function(){
   const q=(document.getElementById('stu-search-input')?.value||'').toLowerCase().trim();
   const results=document.getElementById('stu-search-results');
@@ -489,7 +510,10 @@ window.renderStuSearch=function(){
     </div>
     <div style="font-size:14px;color:var(--brand-d);margin-bottom:4px">${hiZh}</div>
     ${w.ex?`<div class="text-muted" style="font-size:12px;line-height:1.5">${w.ex}</div>`:''}
-    ${course?`<div class="text-muted mt8" style="font-size:11px">📚 ${course.name}</div>`:''}`;
+    <div class="flex gap8 mt8">
+      ${course?`<span class="text-muted" style="font-size:11px">📚 ${course.name}</span>`:''}
+      <button class="btn btn-sm" style="margin-left:auto;font-size:11px" onclick="jumpToStudyWord('${w.id}','${w.cid}')">背這個單字 →</button>
+    </div>`;
     results.appendChild(card);
   });
   if(matched.length>50) results.innerHTML+=`<p class="text-muted text-sm" style="text-align:center;padding:8px">還有 ${matched.length-50} 個結果，請輸入更精確的關鍵字</p>`;
@@ -569,15 +593,20 @@ function renderMultiClassTasks() {
 }
 
 window.startDailyForClass=function(cid){
-  // switch active class and start daily
   const classData=CLASS_DATA_CACHE[cid];
   if(!classData) return;
   CURRENT_CLASS=ALL_CLASSES.find(c=>c.id===cid);
   AC=classData.AC; AW=classData.AW; APP_SETTINGS=classData.settings;
   CLASS_DATA_CACHE[cid]={AC,AW,settings:APP_SETTINGS};
-  window.currentTaskClassId=cid; // track which class this task belongs to
+  window.currentTaskClassId=cid;
   startDaily();
 };
+
+// helper: get daily_progress key for current class+date
+function dpKey(dateStr) {
+  const cid = CURRENT_CLASS?.id || '';
+  return cid ? cid+'_'+dateStr : dateStr;
+}
 
 function renderCL() {
   const u=CU_DATA; const known=u.known||{}; const comp=u.completed_courses||[];
@@ -699,8 +728,10 @@ window.flipCard=function(){document.getElementById('flip-card').classList.toggle
 window.studyNav=function(d){
   const next=SI+d;
   if(dailyMode&&dailyPhase==='study'&&next>=SW.length){
-    const u=CU_DATA; const today=makeupDate||todayStr(); const dp={...(u.daily_progress||{})};
-    if(dp[today]){dp[today].studyDone=true;dp[today].forgotIds=[...(window._dailyForgot||new Set())];u.daily_progress=dp;}
+    const u=CU_DATA; const today=makeupDate||todayStr();
+    const studyKey=makeupDate?makeupDate:dpKey(today);
+    const dp={...(u.daily_progress||{})};
+    if(dp[studyKey]){dp[studyKey].studyDone=true;dp[studyKey].forgotIds=[...(window._dailyForgot||new Set())];u.daily_progress=dp;}
     updateOne('users',CU.id,{daily_progress:dp});
     startDailyQuiz(); return;
   }
@@ -719,6 +750,22 @@ window.markKnown=async function(){
     }
     await updateOne('users',CU.id,{known,completed_courses:u.completed_courses,score:u.score});
     document.getElementById('stu-score').textContent=u.score;
+  }
+  if(dailyMode){ // update daily progress count
+    const today=makeupDate||todayStr();
+    const key=makeupDate?makeupDate:dpKey(today);
+    const dp={...(CU_DATA.daily_progress||{})};
+    if(dp[key]){
+      const doneIds=new Set(dp[key].doneIds||[]);doneIds.add(w.id);
+      dp[key].doneIds=[...doneIds];dp[key].done=doneIds.size;
+      CU_DATA.daily_progress=dp;
+      updateOne('users',CU.id,{daily_progress:dp});
+    }
+    // update progress bar
+    const done=dp[key]?.doneIds?.length||0;
+    const pct=Math.round(done/SW.length*100);
+    const bar=document.getElementById('study-bar');if(bar)bar.style.width=pct+'%';
+    const prog=document.getElementById('study-progress');if(prog)prog.textContent=(SI+1)+'/'+SW.length+' (已學'+done+'個)';
   }
   window.studyNav(1);
 };
@@ -746,12 +793,13 @@ function _enterStudyTabWithQuiz(){
 
 window.startDaily=function(){
   const today=todayStr(); const u=CU_DATA; const dp=u.daily_progress||{};
-  if(dp[today]?.quizDone){alert('🎉 今日任務已全部完成！明天再來。');return;}
+  const todayKey=dpKey(today);
+  if(dp[todayKey]?.quizDone||(dp[today]?.quizDone&&!CURRENT_CLASS?.id)){alert('🎉 今日任務已全部完成！明天再來。');return;}
   makeupDate=null; dailyMode=true;
   SW=getDailyWords();
   if(!SW.length){alert('🎉 今日任務已完成！明天再來。');return;}
   dailyWordIds=new Set(SW.map(w=>w.id));
-  const todayDp=dp[today];
+  const todayDp=dp[todayKey]||dp[today];
   if(todayDp?.quizStarted&&!todayDp?.quizDone){
     dailyPhase='quiz'; window._dailyForgot=new Set(todayDp.forgotIds||[]);
     const answered=new Set(todayDp.answeredIds||[]);
@@ -768,8 +816,8 @@ window.startDaily=function(){
     startDailyQuizFromWords(shuffle([...SW]),SW.length); return;
   }
   dailyPhase='study'; window._dailyForgot=new Set(); wrongWords=[]; dailyRetryCount=0; dailyCorrectIds=[];
-  if(!dp[today]){
-    dp[today]={total:SW.length,done:0,doneIds:[],quizDone:false,studyDone:false,quizStarted:false};
+  if(!dp[todayKey]){
+    dp[todayKey]={total:SW.length,done:0,doneIds:[],quizDone:false,studyDone:false,quizStarted:false};
     u.daily_progress=dp; updateOne('users',CU.id,{daily_progress:dp});
   }
   SI=0; showSC(); _enterStudyTabWithQuiz();
@@ -783,8 +831,11 @@ window.startMakeup=function(dateStr){
   const wordIds=computeNewWordsForDate(dateStr);
   const sr=u.sr||{};
   const reviewWords=[];
+  const mcid=CURRENT_CLASS?.id||'';
   AC.forEach(c=>AW.filter(w=>w.cid===c.id).forEach(w=>{
-    if(sr[w.id]&&sr[w.id].nextDate<=dateStr&&!wordIds.includes(w.id)) reviewWords.push(w);
+    const srKey=mcid?mcid+'_'+w.id:w.id;
+    const srEntry=sr[srKey]||sr[w.id];
+    if(srEntry&&srEntry.nextDate<=dateStr&&!wordIds.includes(w.id)) reviewWords.push(w);
   }));
   SW=[...wordIds.map(id=>AW.find(w=>w.id===id)).filter(Boolean),...reviewWords];
   dailyWordIds=new Set(SW.map(w=>w.id));
@@ -817,8 +868,9 @@ function startDailyQuiz(){
   }
   dailyQI=0;dailyQS=0;dailyQC=0;wrongWords=[];dailyRetryCount=0;
   const targetDate=makeupDate||todayStr();
+  const quizKey=makeupDate?makeupDate:dpKey(targetDate);
   const dp={...(CU_DATA.daily_progress||{})};
-  if(dp[targetDate]){dp[targetDate].quizStarted=true;dp[targetDate].totalWords=SW.length;CU_DATA.daily_progress=dp;}
+  if(dp[quizKey]){dp[quizKey].quizStarted=true;dp[quizKey].totalWords=SW.length;CU_DATA.daily_progress=dp;}
   updateOne('users',CU.id,{daily_progress:dp});
   startDailyQuizFromWords(dailyQuizWords,SW.length);
 }
@@ -899,14 +951,16 @@ async function recordDailyAnswer(wid,correct){
     if(!dailyCorrectIds.includes(wid)) dailyCorrectIds.push(wid);
   }
   if(correct){u.score=(u.score||0)+10;document.getElementById('stu-score').textContent=u.score;}
-  const targetDate=makeupDate||todayStr(); const dp={...(u.daily_progress||{})};
-  if(dp[targetDate]){
-    const answered=dp[targetDate].answeredIds||[];
+  const targetDate=makeupDate||todayStr();
+  const recordKey=makeupDate?makeupDate:dpKey(targetDate);
+  const dp={...(u.daily_progress||{})};
+  if(dp[recordKey]){
+    const answered=dp[recordKey].answeredIds||[];
     if(!answered.includes(wid))answered.push(wid);
-    dp[targetDate].answeredIds=answered;
-    dp[targetDate].quizScore=(dp[targetDate].quizScore||0)+(correct?10:0);
-    dp[targetDate].quizCorrect=(dp[targetDate].quizCorrect||0)+(correct?1:0);
-    dp[targetDate].wrongWords=wrongWords; u.daily_progress=dp;
+    dp[recordKey].answeredIds=answered;
+    dp[recordKey].quizScore=(dp[recordKey].quizScore||0)+(correct?10:0);
+    dp[recordKey].quizCorrect=(dp[recordKey].quizCorrect||0)+(correct?1:0);
+    dp[recordKey].wrongWords=wrongWords; u.daily_progress=dp;
   }
   await updateOne('users',CU.id,{quiz_stats:qs,score:u.score,daily_progress:dp});
 }
@@ -922,22 +976,25 @@ async function finishDailyTask(){
     document.getElementById('t-study').innerHTML=`<div style="padding:24px 4px"><div style="text-align:center;margin-bottom:16px"><div style="font-size:52px;margin-bottom:8px">😅</div><h2 style="margin-bottom:6px;color:var(--danger)">未達標！請重新測驗</h2><div class="text-muted" style="font-size:13px">需達 90%，本次 ${pct}%</div></div><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px"><div class="stat-card"><div class="stat-label">總題數</div><div class="stat-num">${totalWords}</div></div><div class="stat-card"><div class="stat-label">正確率</div><div class="stat-num" style="color:var(--danger)">${pct}%</div></div><div class="stat-card"><div class="stat-label">第${dailyRetryCount}次</div><div class="stat-num" style="color:var(--warn)">${wrongList.length}錯</div></div></div><div style="text-align:left;margin-bottom:16px"><div class="bold text-sm mb8" style="color:var(--danger)">❌ 答錯的單字</div>${wrongList.map(w=>`<div style="display:flex;justify-content:space-between;padding:7px 10px;background:var(--dl);border-radius:6px;margin-bottom:5px;font-size:13px"><span style="font-weight:600;color:var(--danger)">${w.en}</span><span>${w.zh}</span></div>`).join('')}</div><button class="btn btn-p" style="width:100%" onclick="retryDailyQuiz()">🔄 重新測驗（全部 ${totalWords} 題）</button></div>`; return;
   }
   const targetDate=makeupDate||today;
+  const finishKey=makeupDate?makeupDate:dpKey(today);
   const dp={...(u.daily_progress||{})};
-  if(!dp[targetDate])dp[targetDate]={total:totalWords,done:totalWords,doneIds:SW.map(w=>w.id),quizDone:false};
-  dp[targetDate].quizDone=true;dp[targetDate].done=dp[targetDate].total;
-  dp[targetDate].finalPct=pct;dp[targetDate].retries=dailyRetryCount;
-  dp[targetDate].totalWords=totalWords;dp[targetDate].quizCorrect=dailyQC;
-  if(makeupDate)dp[targetDate].isMakeup=true;
+  if(!dp[finishKey])dp[finishKey]={total:totalWords,done:totalWords,doneIds:SW.map(w=>w.id),quizDone:false};
+  dp[finishKey].quizDone=true;dp[finishKey].done=dp[finishKey].total;
+  dp[finishKey].finalPct=pct;dp[finishKey].retries=dailyRetryCount;
+  dp[finishKey].totalWords=totalWords;dp[finishKey].quizCorrect=dailyQC;
+  if(makeupDate)dp[finishKey].isMakeup=true;
   u.daily_progress=dp;
   const sr={...(u.sr||{})};
   const forgot=window._dailyForgot||new Set();
+  const srCid=CURRENT_CLASS?.id||'';
   SW.forEach(w=>{
-    const cur=sr[w.id]||{level:-1};
+    const srKey=srCid?srCid+'_'+w.id:w.id;
+    const cur=sr[srKey]||sr[w.id]||{level:-1}; // fall back to global key
     const remembered=!forgot.has(w.id);
     const newLevel=remembered?Math.min((cur.level<0?0:cur.level)+1,SR_INTERVALS.length-1):0;
     const days=SR_INTERVALS[newLevel];
-    const next=new Date();next.setDate(next.getDate()+days);
-    sr[w.id]={level:newLevel,nextDate:next.toISOString().slice(0,10)};
+    const next=new Date(Date.now()+8*3600000);next.setDate(next.getDate()+days);
+    sr[srKey]={level:newLevel,nextDate:next.toISOString().slice(0,10)};
   });
   u.sr=sr;
   const known={...(u.known||{})};const comp=[...(u.completed_courses||[])];let scoreBonus=0;
@@ -1053,7 +1110,8 @@ async function updateScore(wid,correct=true){
     // auto-add to notebook if not already
     await addToNotebook(wid);
   }
-  if(correct){QS+=10;QC++;u.score=(u.score||0)+10;const known={...(u.known||{})};known[wid]=true;u.known=known;await updateOne('users',CU.id,{score:u.score,known,quiz_stats:qs});document.getElementById('stu-score').textContent=u.score;}
+  if(correct){QS+=10;QC++;u.score=(u.score||0)+10;const known={...(u.known||{})};known[wid]=true;u.known=known;await updateOne('users',CU.id,{score:u.score,known,quiz_stats:qs});document.getElementById('stu-score').textContent=u.score;
+  const newBadges=checkAchievements(u);if(newBadges.length)showAchievementToast(newBadges);}
   else{await updateOne('users',CU.id,{quiz_stats:qs});}
 }
 async function answerMC(btn,correct,wid){
@@ -1152,7 +1210,24 @@ const ACHIEVEMENTS=[
   {id:'score_500',icon:'🤑',name:'積分高手',desc:'累積 500 分',check:u=>(u.score||0)>=500},
 ];
 function checkStreak(u,days){const dp=u.daily_progress||{};let streak=0;for(let i=0;i<days;i++){const d=new Date();d.setDate(d.getDate()-i);const ds=d.toISOString().slice(0,10);if(dp[ds]?.quizDone)streak++;else break;}return streak>=days;}
-function checkAchievements(u){const earned=new Set(u.achievements||[]);const newBadges=[];ACHIEVEMENTS.forEach(a=>{if(!earned.has(a.id)&&a.check(u)){earned.add(a.id);newBadges.push(a);}});if(newBadges.length){u.achievements=[...earned];updateOne('users',CU.id,{achievements:u.achievements});}return newBadges;}
+function checkAchievements(u){
+  const earned=new Set(u.achievements||[]);const newBadges=[];
+  ACHIEVEMENTS.forEach(a=>{if(!earned.has(a.id)&&a.check(u)){earned.add(a.id);newBadges.push(a);}});
+  if(newBadges.length){u.achievements=[...earned];updateOne('users',CU.id,{achievements:u.achievements});}
+  return newBadges;
+}
+function showAchievementToast(badges){
+  if(!badges.length)return;
+  badges.forEach((b,i)=>{
+    setTimeout(()=>{
+      const toast=document.createElement('div');
+      toast.style.cssText='position:fixed;top:16px;left:50%;transform:translateX(-50%);background:var(--warn);color:#fff;border-radius:10px;padding:10px 18px;font-size:13px;font-weight:600;z-index:9999;box-shadow:0 4px 16px rgba(0,0,0,0.2);animation:fadeInDown 0.3s ease';
+      toast.innerHTML=`🏅 解鎖成就：${b.icon} ${b.name}`;
+      document.body.appendChild(toast);
+      setTimeout(()=>{toast.style.opacity='0';toast.style.transition='opacity 0.5s';setTimeout(()=>toast.remove(),500);},2500);
+    },i*600);
+  });
+}
 function getEarnedAchievements(u){const earned=new Set(u.achievements||[]);return ACHIEVEMENTS.map(a=>({...a,done:earned.has(a.id)||a.check(u)}));}
 function renderBadges(){
   const list=document.getElementById('badges-list');const u=CU_DATA;
@@ -2105,38 +2180,57 @@ window.exportGrades=async function(){
   if(isNaN(days)||days<1){alert('請輸入有效天數');return;}
   const allUsers=await getAll('users');
   const accounts=await getAll('accounts');
+  const allCourses=await getAll('courses');
+  const allWords=await getAll('words');
   const students=accounts.filter(a=>a.role==='student').sort((a,b)=>a.id.localeCompare(b.id));
-  // build date headers
+  // build date headers using UTC+8
   const dateHeaders=[];
-  for(let i=days-1;i>=0;i--){const d=new Date();d.setDate(d.getDate()-i);dateHeaders.push(d.toISOString().slice(0,10));}
-  // build course headers
-  const courseHeaders=AC.map(c=>c.name);
-  // CSV header
-  const headers=['學號','姓名','班級','積分','已學單字',...dateHeaders.map(d=>`${d.slice(5)} 完成率`),...courseHeaders.map(n=>n+' 進度%')];
+  for(let i=days-1;i>=0;i--){
+    const d=new Date(Date.now()+8*3600000);d.setDate(d.getDate()-i);
+    dateHeaders.push(d.toISOString().slice(0,10));
+  }
+  // get all unique classes across all students
+  const allClassIds=[...new Set(students.flatMap(s=>s.classes||[]))];
+  // get all courses across all classes
+  const exportCourses=allCourses.filter(c=>
+    allClassIds.some(cid=>Array.isArray(c.classIds)?c.classIds.includes(cid):c.classId===cid)
+  );
+  const headers=['學號','姓名','班級','積分','已學單字',
+    ...dateHeaders.map(d=>`${d.slice(5)} 完成率`),
+    ...exportCourses.map(c=>c.name+' 進度%')];
   const rows=[headers.join(',')];
   students.forEach(s=>{
     const u=allUsers.find(x=>x.id===s.id)||{};
     const dp=u.daily_progress||{};
     const known=u.known||{};
-    const classes=(s.classes||[]).map(cid=>{const c=ALL_CLASSES.find(x=>x.id===cid);return c?c.level+c.grade:'?';}).join('/');
+    const stuClasses=s.classes||[];
+    const classLabel=stuClasses.map(cid=>{
+      const c=ALL_CLASSES.find(x=>x.id===cid);return c?(c.displayName||c.level+c.grade):'?';
+    }).join('/');
+    // for each date, check all student's classes for completion
     const dayVals=dateHeaders.map(ds=>{
-      const d=dp[ds];
-      if(!d) return '—';
-      if(d.quizDone) return (d.finalPct||100)+'%';
-      if(d.studyDone) return '背誦完';
-      if(d.doneIds?.length) return '背誦中';
+      // check class-specific key first, then fall back to date-only key
+      let best=null;
+      for(const cid of stuClasses){
+        const d=dp[cid+'_'+ds]||dp[ds];
+        if(!best||d?.quizDone) best=d;
+      }
+      if(!best||(!best.quizDone&&!best.studyDone&&!best.doneIds?.length)) return '—';
+      if(best.quizDone) return (best.finalPct||100)+'%';
+      if(best.studyDone) return '背誦完';
+      if(best.doneIds?.length) return '背誦中';
       return '未開始';
     });
-    const courseVals=AC.map(c=>{
-      const ws=AW.filter(w=>w.cid===c.id);
+    const courseVals=exportCourses.map(c=>{
+      const ws=allWords.filter(w=>w.cid===c.id);
       if(!ws.length) return '0%';
       const done=ws.filter(w=>known[w.id]).length;
       return Math.round(done/ws.length*100)+'%';
     });
-    const row=[s.id, s.name||'', classes, u.score||0, Object.keys(known).length, ...dayVals, ...courseVals];
+    const row=[s.id,s.name||'',classLabel,u.score||0,Object.keys(known).length,...dayVals,...courseVals];
     rows.push(row.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(','));
   });
-  const bom='﻿'; // UTF-8 BOM for Excel
+  const bom='﻿';
   const blob=new Blob([bom+rows.join('\n')],{type:'text/csv;charset=utf-8'});
 
   const url=URL.createObjectURL(blob);
@@ -2276,6 +2370,51 @@ async function showStudentDetail(u){
   const topEl=document.createElement('div');topEl.className='mb12';topEl.style.cssText='display:grid;grid-template-columns:repeat(2,1fr);gap:8px';
   topEl.innerHTML=`<div class="stat-card"><div class="stat-label">總積分</div><div class="stat-num" style="color:var(--brand)">${u.score||0}</div></div><div class="stat-card"><div class="stat-label">已學單字</div><div class="stat-num">${Object.keys(known).length} / ${AW.length}</div></div><div class="stat-card"><div class="stat-label">測驗總答題</div><div class="stat-num">${totalAttempts}</div></div><div class="stat-card"><div class="stat-label">測驗正確率</div><div class="stat-num" style="color:${quizPct>=70?'var(--success)':'var(--warn)'}">${totalAttempts?quizPct+'%':'—'}</div></div>`;
   detail.appendChild(topEl);
+  // 14-day completion rate chart
+  const chartEl=document.createElement('div');chartEl.className='card mb12';
+  const chartDays=14;const chartDates=[];
+  for(let i=chartDays-1;i>=0;i--){const d=new Date(Date.now()+8*3600000);d.setDate(d.getDate()-i);chartDates.push(d.toISOString().slice(0,10));}
+  const chartVals=chartDates.map(ds=>{
+    // check all student classes
+    const stuClassIds=[];
+    for(const cls of ALL_CLASSES){if(stuClassIds.length===0)stuClassIds.push(cls.id);}
+    for(const cid of (Object.keys(dp).filter(k=>k.includes('_')).map(k=>k.split('_').slice(0,-1).join('_')))){
+      if(!stuClassIds.includes(cid))stuClassIds.push(cid);
+    }
+    let best=null;
+    [...stuClassIds,''].forEach(cid=>{
+      const key=cid?cid+'_'+ds:ds;
+      const d2=dp[key];if(d2&&(!best||d2.quizDone))best=d2;
+    });
+    if(!best)return 0;
+    if(best.quizDone)return best.finalPct||100;
+    if(best.studyDone)return 50;
+    if(best.doneIds?.length)return 25;
+    return 0;
+  });
+  const maxVal=100;const chartH=60;const barW=Math.floor(220/chartDays);
+  const bars=chartVals.map((v,i)=>{
+    const h=Math.round(v/maxVal*chartH);
+    const color=v>=90?'var(--success)':v>=50?'var(--warn)':v>0?'var(--brand)':'var(--border)';
+    const ds=chartDates[i];const label=(new Date(ds).getDate());
+    return `<div style="display:flex;flex-direction:column;align-items:center;gap:2px;flex:1">
+      <div style="font-size:9px;color:var(--muted)">${v>0?v+'%':''}</div>
+      <div style="height:${h}px;min-height:${v>0?2:0}px;background:${color};border-radius:2px;width:${Math.max(barW-2,4)}px;transition:height 0.3s"></div>
+      <div style="font-size:9px;color:var(--muted)">${label}</div>
+    </div>`;
+  }).join('');
+  chartEl.innerHTML=`<div class="bold text-sm mb8">📊 近 14 天完成率趨勢</div>
+    <div style="display:flex;align-items:flex-end;height:${chartH+40}px;gap:1px;padding:0 4px">
+      ${bars}
+    </div>
+    <div style="display:flex;gap:8px;margin-top:6px;font-size:11px">
+      <span style="color:var(--success)">■ ≥90% 通過</span>
+      <span style="color:var(--warn)">■ 背誦完</span>
+      <span style="color:var(--brand)">■ 進行中</span>
+      <span style="color:var(--border)">■ 未開始</span>
+    </div>`;
+  detail.appendChild(chartEl);
+
   const histEl=document.createElement('div');histEl.className='card mb12';let histHTML='<div class="bold text-sm mb8">📅 近 14 天每日任務</div><div style="display:flex;gap:4px;flex-wrap:wrap">';
   for(let i=13;i>=0;i--){const d=new Date();d.setDate(d.getDate()-i);const ds=d.toISOString().slice(0,10);const dpDay=dp[ds];const label=i===0?'今':(d.getMonth()+1)+'/'+(d.getDate());let bg,color,icon;if(!dpDay||dpDay.total===0){bg='#f1f5f9';color='#94a3b8';icon='—';}else if(dpDay.quizDone){bg=dpDay.isMakeup?'#e0f2fe':'var(--sl)';color=dpDay.isMakeup?'#0369a1':'var(--success)';icon=(dpDay.finalPct||'✓')+(dpDay.finalPct?'%':'')+(dpDay.isMakeup?'📋':'');}else{bg='var(--wl)';color='var(--warn)';icon=dpDay.doneIds?.length?dpDay.doneIds.length+'...':'進行中';}histHTML+=`<div style="background:${bg};color:${color};border-radius:6px;padding:5px 7px;text-align:center;font-size:11px;font-weight:500;min-width:36px"><div>${label}</div><div style="margin-top:1px">${icon}</div></div>`;}
   histHTML+='</div>';histEl.innerHTML=histHTML;detail.appendChild(histEl);
@@ -2317,6 +2456,17 @@ async function showStudentDetail(u){
   const srEl=document.createElement('div');srEl.className='card mb12';
   srEl.innerHTML=`<div class="bold text-sm mb8">🧠 遺忘曲線進度（共 ${Object.keys(sr).length} 個單字進入複習）</div><div style="display:flex;gap:6px;flex-wrap:wrap">${['初學','第2次','第3次','第4次','熟練'].map((label,i)=>`<div style="flex:1;min-width:52px;background:var(--bg);border-radius:8px;padding:8px;text-align:center;border:1px solid var(--border)"><div class="text-muted" style="font-size:10px">${label}</div><div style="font-size:18px;font-weight:700;color:var(--brand);margin-top:2px">${srLevels[i]}</div></div>`).join('')}</div>`;
   detail.appendChild(srEl);
+  // notebook section
+  const nbWords=(u.notebook||[]).map(wid=>AW.find(w=>w.id===wid)).filter(Boolean);
+  if(nbWords.length){
+    const nbEl=document.createElement('div');nbEl.className='card mb12';
+    nbEl.innerHTML=`<div class="bold text-sm mb8">📌 複習本（${nbWords.length} 個單字）</div>
+      <div style="display:flex;flex-wrap:wrap;gap:4px">
+        ${nbWords.map(w=>`<div style="background:var(--wl);color:var(--warn);border-radius:4px;padding:3px 8px;font-size:12px;font-weight:500">${w.en}</div>`).join('')}
+      </div>`;
+    detail.appendChild(nbEl);
+  }
+
   const courseEl=document.createElement('div');courseEl.className='card';let courseHTML='<div class="bold text-sm mb8">📚 課程單字詳情</div>';
   if(!AC.length){courseHTML+='<p class="text-muted text-sm">尚無課程</p>';}
   else{AC.forEach(c=>{const ws=AW.filter(w=>w.cid===c.id);const done=ws.filter(w=>known[w.id]).length;const pct=ws.length?Math.round(done/ws.length*100):0;const isComp=comp.includes?.(c.id)||false;courseHTML+=`<div style="padding:10px 0;border-bottom:1px solid var(--border)"><div class="flex gap8 mb8"><span class="bold text-sm">${c.name}</span><span class="tag ${isComp?'tag-g':'tag-a'}" style="font-size:11px">${isComp?'✓ 完成':'進行中'}</span><span class="text-muted" style="font-size:12px;margin-left:auto">${done}/${ws.length} (${pct}%)</span></div><div class="progress-bar mb8"><div class="progress-fill" style="width:${pct}%"></div></div><div style="display:flex;flex-wrap:wrap;gap:4px">${ws.map(w=>{const isKnown=!!known[w.id];const wqs=qs[w.id];const srLv=sr[w.id]?.level;let bg,color;if(!isKnown){bg='#f1f5f9';color='#94a3b8';}else if(srLv>=4){bg='var(--sl)';color='var(--success)';}else if(srLv>=2){bg='var(--brand-l)';color='var(--brand-d)';}else{bg='var(--wl)';color='var(--warn)';}const acc=wqs&&wqs.attempts?Math.round(wqs.correct/wqs.attempts*100)+'%':'';return`<div title="${w.en}${wqs?' (答題'+wqs.attempts+'次 正確'+wqs.correct+'次)':''}" style="background:${bg};color:${color};border-radius:4px;padding:3px 7px;font-size:11px;font-weight:500;cursor:default">${w.en}${acc?'<span style="opacity:0.7;font-size:10px"> '+acc+'</span>':''}</div>`;}).join('')}</div></div>`;});}
@@ -2448,6 +2598,7 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
 .bold{font-weight:600}.text-muted{color:var(--muted);font-size:13px}.text-sm{font-size:13px}
 .header{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid var(--border)}
 .rank-mode-btn.active{background:var(--brand);color:#fff;border-color:var(--brand)}
+@keyframes fadeInDown{from{opacity:0;transform:translateX(-50%) translateY(-10px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
 </style>
 </head>
 <body>
