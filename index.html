@@ -232,6 +232,7 @@ async function selectClass(cid) {
   document.getElementById('stu-avatar').textContent = CU.name[0];
   document.getElementById('stu-score').textContent = CU_DATA.score || 0;
   showScreen('s-student');
+  loadSC(); loadQC();
   stuTab('home', document.querySelector('#s-student .tab'));
 }
 
@@ -338,7 +339,8 @@ window.stuTab = function(t, el) {
   if(t==='badges') renderBadges();
   if(t==='search'){renderStuSearch();setTimeout(()=>document.getElementById('stu-search-input')?.focus(),100);}
   if(t==='notebook') renderNotebook();
-  if(t==='study'){const fb=document.getElementById('forgot-btn');if(fb)fb.style.display=dailyMode?'inline-flex':'none';}
+  if(t==='quiz'){loadQC();}
+  if(t==='study'){loadSC();const fb=document.getElementById('forgot-btn');if(fb)fb.style.display=dailyMode?'inline-flex':'none';}
 };
 
 function renderNotebook(){
