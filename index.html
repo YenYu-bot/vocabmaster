@@ -817,72 +817,92 @@ window.openGrammarImport = function(sid, sname){
 // Parse grammar questions from text (supports the 解析卷 format)
 function parseGrammarText(text){
   const questions = [];
-  // Normalize: replace full-width spaces with regular spaces for easier parsing
-  // Split into blocks by double newline, find blocks containing question markers
-  const rawBlocks = text.split(/\n\n+/);
   
-  // Group into question units: a question unit starts with "- (   )" line
-  const units = [];
-  let current = null;
-  rawBlocks.forEach(block => {
-    const trimmed = block.trim();
-    if(!trimmed) return;
-    if(/^[-－]\s*[（(][\s　]*[）)]/.test(trimmed)){
-      if(current) units.push(current);
-      current = [trimmed];
-    } else if(current) {
-      current.push(trimmed);
-    }
-  });
-  if(current) units.push(current);
-
-  units.forEach(unit => {
-    // unit[0] = question line (may include options on same line separated by newline)
-    // unit[1] = options line (if separate)
-    // unit[n] = 答案/解析/難易度 lines
+  // Normalize text: unify spaces, remove zero-width chars
+  let t = text.replace(/\r/g,'').replace(/[\u200b\u200c\u200d\ufeff]/g,'');
+  
+  // Strategy: split by 答案： which reliably marks end of each question
+  // Each chunk before 答案： contains the question + options
+  // Each chunk after 答案： contains the answer letter + possibly 解析 + 難易度
+  
+  // First, split the whole text into question blocks
+  // A block starts with a line containing ( ) or （ ） at the start (question marker)
+  // We use 答案 as the reliable anchor
+  
+  const answerSplit = t.split(/答案[：:]/);
+  // answerSplit[0] = preamble (title etc)
+  // answerSplit[1+] = answer + 解析 + 難易度 + next question...
+  
+  if(answerSplit.length < 2) return questions;
+  
+  // Collect question texts: question n's text is the LAST paragraph of answerSplit[n]
+  // (because after the prev answer comes the next question text)
+  for(let i = 0; i < answerSplit.length - 1; i++){
+    // The question text for question i+1 is at the END of answerSplit[i]
+    // The answer for question i+1 is at the START of answerSplit[i+1]
     
-    let qLine = '', optLine = '', answerLine = '', analysisLine = '', diffLine = '';
+    const chunkBefore = answerSplit[i];
+    const chunkAfter = answerSplit[i+1];
     
-    // Flatten all lines in unit
-    const allLines = unit.join('\n').split('\n').map(l=>l.trim()).filter(l=>l);
-    
-    allLines.forEach((l, i) => {
-      if(i===0){
-        qLine = l.replace(/^[-－]\s*[（(][\s　]*[）)]\s*/, '').trim();
-      } else if(/[（(][ＡA][）)]/.test(l) && !optLine){
-        optLine = l;
-      } else if(/^答案[：:]/.test(l)){
-        answerLine = l;
-      } else if(/^解析[：:]/.test(l)){
-        analysisLine = l;
-      } else if(/^難易度[：:]/.test(l)){
-        diffLine = l;
-      }
-    });
-    
-    if(!qLine || !optLine || !answerLine) return;
-    
-    // Parse options - handle both fullwidth (Ａ) and halfwidth (A) with （） or ()
-    const opts = [];
-    const optPattern = /[（(][ＡＢＣＤABCDａｂｃｄabcd][）)]\s*([^（(）)　	]+(?:[　	][^（(）)　	]+)*)/g;
-    let m;
-    while((m = optPattern.exec(optLine)) !== null){
-      const val = m[1].replace(/[　\s]+$/, '').trim();
-      if(val) opts.push(val);
-    }
-    if(opts.length < 2) return;
-    
-    // Parse answer
-    const ansMat = answerLine.match(/[（(]([ＡＢＣＤABCDａｂｃｄabcd])[）)]/);
-    if(!ansMat) return;
+    // Extract answer letter from start of chunkAfter
+    const ansMat = chunkAfter.match(/^\s*[（(]([ＡＢＣＤABCDａｂｃｄabcd])[）)]/);
+    if(!ansMat) continue;
     const ansChar = ansMat[1];
     const ansIdx = 'ＡＢＣＤABCDａｂｃｄabcd'.indexOf(ansChar) % 4;
     
-    const analysis = analysisLine.replace(/^解析[：:]\s*/, '').trim();
-    const difficulty = diffLine.replace(/^難易度[：:]\s*/, '').trim() || '中';
+    // Extract 解析 from chunkAfter
+    const analysisMat = chunkAfter.match(/解析[：:]\s*([^\n難]+)/);
+    const analysis = analysisMat ? analysisMat[1].trim() : '';
     
+    // Extract 難易度
+    const diffMat = chunkAfter.match(/難易度[：:]\s*([易中難]+)/);
+    const difficulty = diffMat ? diffMat[1].trim() : '中';
+    
+    // Extract question+options from END of chunkBefore
+    // Find lines that contain question markers or option patterns
+    const lines = chunkBefore.split('\n').map(l=>l.trim()).filter(l=>l);
+    
+    // Find the last block that looks like a question (contains （ ） or ( ) marker, OR contains options)
+    // Walk backwards from end to find options line and question line
+    let optLine = '', qLines = [];
+    for(let j = lines.length-1; j >= 0; j--){
+      const l = lines[j];
+      if(/[（(][ＡＢＣＤABCDａｂｃｄabcd][）)]/.test(l) && !optLine){
+        optLine = l; // this line has options
+      } else if(optLine && /[（(][\s　]*[）)]/.test(l)){
+        qLines.unshift(l.replace(/^[-－]\s*[（(][\s　]*[）)]\s*/,'').trim());
+        break;
+      } else if(optLine && l && !/^(解析|難易度|\[)/.test(l)){
+        // This might be part of question text
+        qLines.unshift(l);
+      }
+    }
+    
+    // If we didn't find separate qLine, the question might be in the same line as options
+    let qLine = qLines.join(' ').trim();
+    if(!qLine && optLine){
+      // Try to extract question from beginning of optLine before first option
+      const beforeFirst = optLine.replace(/^[-－]?\s*[（(][\s　]*[）)]\s*/,'');
+      const firstOptIdx = beforeFirst.search(/[（(][ＡAａa][）)]/);
+      if(firstOptIdx > 0) qLine = beforeFirst.slice(0, firstOptIdx).trim();
+    }
+    
+    if(!qLine || !optLine) continue;
+    
+    // Parse options
+    const opts = [];
+    const optPattern = /[（(][ＡＢＣＤABCDａｂｃｄabcd][）)]\s*([^（(）)\n]+)/g;
+    let m;
+    while((m = optPattern.exec(optLine)) !== null){
+      const val = m[1].trim().replace(/\s+$/,'');
+      if(val) opts.push(val);
+    }
+    if(opts.length < 2) continue;
+    
+    qLine = qLine.replace(/^[-－]?\s*[（(][\s　]*[）)]\s*/, '').trim();
     questions.push({ q: qLine, opts, ans: ansIdx, analysis, difficulty });
-  });
+  }
+  
   return questions;
 }
 
