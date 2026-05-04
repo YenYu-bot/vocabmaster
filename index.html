@@ -2776,7 +2776,8 @@ window.renderStudentList=async function(){
     else dailyTag='<span class="tag" style="background:#f1f5f9;color:#64748b">未開始</span>';
     const medal=i===0?'🥇':i===1?'🥈':i===2?'🥉':'';
     const row=document.createElement('div');row.style.cssText='display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--border);cursor:pointer';
-    const account_name=u.name||u.id;
+    const acctInfo=(window._cachedAccounts||[]).find(a=>a.id===u.id);
+    const account_name=acctInfo?.name||u.name||u.id;
     row.innerHTML=`<div style="width:22px;text-align:center;font-size:14px">${medal||'<span style="font-size:12px;color:var(--muted)">#'+(i+1)+'</span>'}</div><div class="avatar">${account_name[0]}</div><div style="flex:1"><div class="flex gap8 mb8"><span class="bold text-sm">${account_name}</span><span class="text-muted" style="font-size:11px">${u.id}</span>${dailyTag}</div><div class="text-muted" style="font-size:12px">積分 ${u.score||0} · 已學 ${Object.keys(u.known||{}).length} 個 · 完成 ${(u.completed_courses||[]).length} 課</div></div><span style="color:var(--brand);font-size:18px">›</span>`;
     row.onclick=()=>showStudentDetail(u);
     list.appendChild(row);
