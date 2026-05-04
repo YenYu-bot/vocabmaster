@@ -410,12 +410,13 @@ function getDailyWords() {
 window.stuTab = function(t, el) {
   document.querySelectorAll('#s-student .tab').forEach(x=>x.classList.remove('active'));
   if(el) el.classList.add('active');
-  ['home','study','quiz','rank','badges','search','notebook'].forEach(n=>document.getElementById('t-'+n).style.display=n===t?'block':'none');
+  ['home','study','quiz','rank','badges','search','notebook','grammar'].forEach(n=>document.getElementById('t-'+n).style.display=n===t?'block':'none');
   if(t==='rank') renderRank();
   if(t==='home'){dailyMode=false;refreshHome();}
   if(t==='badges') renderBadges();
   if(t==='search'){renderStuSearch();setTimeout(()=>document.getElementById('stu-search-input')?.focus(),100);}
   if(t==='notebook') renderNotebook();
+  if(t==='grammar') renderGrammarSets();
   if(t==='quiz'){loadQC();}
   if(t==='study'){loadSC();const fb=document.getElementById('forgot-btn');if(fb)fb.style.display=dailyMode?'inline-flex':'none';}
 };
@@ -752,6 +753,342 @@ async function showSC(){
     setTimeout(()=>window.speakWord(w.en), 300);
   }
 }
+
+// ── grammar quiz ──────────────────────────────────────────────
+let GS = []; // grammar sets
+let GQ = []; // grammar questions for current set
+let GI = 0, GCorrect = 0, GScore = 0;
+let currentGrammarSet = null;
+let grammarWrong = [];
+
+async function renderAdminGrammar(){
+  const list = document.getElementById('grammar-set-list');
+  if(!list) return;
+  list.innerHTML = '<p class="text-muted text-sm">載入中...</p>';
+  GS = await getAll('grammar_sets');
+  GS.sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
+  if(!GS.length){ list.innerHTML = '<p class="text-muted text-sm">尚無題組，請新增。</p>'; return; }
+  list.innerHTML = '';
+  for(const gs of GS){
+    const qCount = (await getAll('grammar_questions')).filter(q=>q.setId===gs.id).length;
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--border)';
+    row.innerHTML = `<div style="flex:1">
+      <div class="bold text-sm">${gs.name}</div>
+      <div class="text-muted" style="font-size:12px">${gs.desc||''} · ${qCount} 題</div>
+    </div>
+    <button class="btn btn-sm btn-p" onclick="openGrammarImport('${gs.id}','${gs.name.replace(/'/g,"\'")}')">匯入題目</button>
+    <button class="btn btn-sm" onclick="previewGrammarSet('${gs.id}')">查看題目</button>
+    <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="deleteGrammarSet('${gs.id}')">刪除</button>`;
+    list.appendChild(row);
+  }
+}
+
+window.addGrammarSet = async function(){
+  const name = document.getElementById('grammar-set-name').value.trim();
+  const desc = document.getElementById('grammar-set-desc').value.trim();
+  if(!name){ alert('請輸入題組名稱'); return; }
+  const id = 'gs' + Date.now();
+  await setOne('grammar_sets', id, {id, name, desc, createdAt: Date.now()});
+  document.getElementById('grammar-set-name').value = '';
+  document.getElementById('grammar-set-desc').value = '';
+  renderAdminGrammar();
+};
+
+window.deleteGrammarSet = async function(sid){
+  if(!confirm('確定刪除此題組？題目也會一併刪除。')) return;
+  const qs = (await getAll('grammar_questions')).filter(q=>q.setId===sid);
+  await Promise.all(qs.map(q=>delOne('grammar_questions',q.id)));
+  await delOne('grammar_sets', sid);
+  renderAdminGrammar();
+};
+
+window.openGrammarImport = function(sid, sname){
+  currentGrammarSet = sid;
+  document.getElementById('grammar-import-title').textContent = '匯入題目 → ' + sname;
+  document.getElementById('grammar-import-text').value = '';
+  document.getElementById('grammar-import-msg').textContent = '';
+  document.getElementById('grammar-preview').innerHTML = '';
+  document.getElementById('grammar-import-panel').style.display = 'block';
+  document.getElementById('grammar-import-panel').scrollIntoView({behavior:'smooth'});
+};
+
+// Parse grammar questions from text (supports the 解析卷 format)
+function parseGrammarText(text){
+  const questions = [];
+  // Split by question markers: lines starting with "- (   )" or numbered
+  const blocks = text.split(/\n(?=[-]\s*\([\s　]*\))/);
+  blocks.forEach(block => {
+    block = block.trim();
+    if(!block) return;
+    // Extract question text (first line, remove leading "- (   )")
+    const lines = block.split('\n').map(l=>l.trim()).filter(l=>l);
+    if(!lines.length) return;
+    // Question line
+    let qLine = lines[0].replace(/^[-\-]\s*\([\s　]*\)\s*/, '').trim();
+    if(!qLine) return;
+    // Find options line (contains Ａ Ｂ Ｃ Ｄ or A B C D)
+    let optLine = '', answerLine = '', analysisLine = '', diffLine = '';
+    for(let i=1; i<lines.length; i++){
+      const l = lines[i];
+      if(/[（(][ＡAaａ][）)]/.test(l) && !optLine) optLine = l;
+      else if(/^答案[：:]/.test(l)) answerLine = l;
+      else if(/^解析[：:]/.test(l)) analysisLine = l;
+      else if(/^難易度[：:]/.test(l)) diffLine = l;
+    }
+    if(!optLine) return;
+    // Parse options
+    const optRegex = /[（(][ＡAａa][）)]\s*([^（(]+)/g;
+    const fullOpts = ['A','B','C','D'];
+    const fullOptsFull = ['Ａ','Ｂ','Ｃ','Ｄ'];
+    const opts = [];
+    // Try fullwidth pattern first
+    const fw = optLine.match(/[（(][ＡＢＣＤ][）)]\s*([^（(）)]+)/g);
+    if(fw && fw.length >= 2){
+      fw.forEach(o => {
+        const m = o.match(/[（(][ＡＢＣＤ][）)]\s*(.+)/);
+        if(m) opts.push(m[1].trim());
+      });
+    } else {
+      // Try halfwidth
+      const hw = optLine.match(/[（(][ABCD][）)]\s*([^（(）)]+)/g);
+      if(hw) hw.forEach(o => {
+        const m = o.match(/[（(][ABCD][）)]\s*(.+)/);
+        if(m) opts.push(m[1].trim());
+      });
+    }
+    if(opts.length < 2) return;
+    // Parse answer
+    const ansMat = answerLine.match(/[（(]([ＡＢＣＤABCDａｂｃｄabcd])[）)]/);
+    if(!ansMat) return;
+    const ansChar = ansMat[1];
+    const ansIdx = 'ＡＢＣＤABCDａｂｃｄabcd'.indexOf(ansChar) % 4;
+    const analysis = analysisLine.replace(/^解析[：:]\s*/, '').trim();
+    const difficulty = diffLine.replace(/^難易度[：:]\s*/, '').trim() || '中';
+    questions.push({
+      q: qLine,
+      opts,
+      ans: ansIdx,
+      analysis,
+      difficulty
+    });
+  });
+  return questions;
+}
+
+window.parseAndImportGrammar = async function(){
+  const text = document.getElementById('grammar-import-text').value.trim();
+  const msg = document.getElementById('grammar-import-msg');
+  const preview = document.getElementById('grammar-preview');
+  if(!text){ msg.style.color='var(--danger)'; msg.textContent='請貼上題目文字'; return; }
+  if(!currentGrammarSet){ msg.style.color='var(--danger)'; msg.textContent='請先選擇題組'; return; }
+  msg.style.color='var(--muted)'; msg.textContent='解析中...';
+  const parsed = parseGrammarText(text);
+  if(!parsed.length){ msg.style.color='var(--danger)'; msg.textContent='未解析到任何題目，請確認格式'; return; }
+  // Preview
+  preview.innerHTML = `<div class="notice notice-i mb8">解析到 ${parsed.length} 題，確認後點「確認匯入」</div>` +
+    parsed.slice(0,3).map((q,i)=>`<div style="background:var(--bg);border-radius:6px;padding:8px;margin-bottom:6px;font-size:13px">
+      <div class="bold mb4">${i+1}. ${q.q}</div>
+      ${q.opts.map((o,j)=>`<span style="margin-right:8px;${j===q.ans?'color:var(--success);font-weight:700':''}">（${['Ａ','Ｂ','Ｃ','Ｄ'][j]}）${o}</span>`).join('')}
+      ${q.analysis?`<div class="text-muted mt4" style="font-size:11px">解析：${q.analysis}</div>`:''}
+    </div>`).join('') +
+    (parsed.length>3?`<div class="text-muted text-sm">...還有 ${parsed.length-3} 題</div>`:'') +
+    `<button class="btn btn-p mt8" onclick="confirmImportGrammar(${JSON.stringify(parsed).replace(/"/g,'&quot;')})">✓ 確認匯入 ${parsed.length} 題</button>`;
+  msg.textContent = '';
+};
+
+window.confirmImportGrammar = async function(parsed){
+  const msg = document.getElementById('grammar-import-msg');
+  msg.style.color='var(--muted)'; msg.textContent='匯入中...';
+  try{
+    await Promise.all(parsed.map(q=>{
+      const id = 'gq' + Date.now() + Math.random().toString(36).slice(2,6);
+      return setOne('grammar_questions', id, {...q, id, setId: currentGrammarSet, createdAt: Date.now()});
+    }));
+    msg.style.color='var(--success)'; msg.textContent=`✓ 成功匯入 ${parsed.length} 題！`;
+    document.getElementById('grammar-preview').innerHTML='';
+    document.getElementById('grammar-import-text').value='';
+    renderAdminGrammar();
+  }catch(e){ msg.style.color='var(--danger)'; msg.textContent='匯入失敗：'+e.message; }
+};
+
+window.importGrammarDocx = async function(input){
+  const file = input.files[0];
+  if(!file) return;
+  const msg = document.getElementById('grammar-import-msg');
+  msg.style.color='var(--muted)'; msg.textContent='讀取 docx 中...';
+  try{
+    // Use mammoth to extract text from docx
+    const arrayBuffer = await file.arrayBuffer();
+    const mammoth = await import('https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js').catch(()=>null);
+    if(!mammoth){ msg.style.color='var(--danger)'; msg.textContent='無法載入 docx 解析器，請改用貼上文字方式'; return; }
+    const result = await mammoth.default.extractRawText({arrayBuffer});
+    document.getElementById('grammar-import-text').value = result.value;
+    msg.style.color='var(--success)'; msg.textContent='✓ 已讀取 docx，請確認後點「解析並匯入」';
+  }catch(e){ msg.style.color='var(--danger)'; msg.textContent='讀取失敗：'+e.message; }
+};
+
+window.previewGrammarSet = async function(sid){
+  const qs = (await getAll('grammar_questions')).filter(q=>q.setId===sid);
+  if(!qs.length){ alert('此題組尚無題目'); return; }
+  const modal = document.createElement('div');
+  modal.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:999;overflow-y:auto;padding:16px';
+  modal.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px;max-width:600px;margin:0 auto">
+    <div class="flex gap8 mb12"><div class="bold">共 ${qs.length} 題</div><button class="btn btn-sm" style="margin-left:auto" onclick="this.closest('[style*=fixed]').remove()">✕ 關閉</button></div>
+    ${qs.map((q,i)=>`<div style="padding:10px 0;border-bottom:1px solid var(--border)">
+      <div class="bold text-sm mb4">${i+1}. ${q.q}</div>
+      ${q.opts.map((o,j)=>`<span style="display:inline-block;margin-right:8px;font-size:13px;${j===q.ans?'color:var(--success);font-weight:700':'color:var(--text)'}">（${['Ａ','Ｂ','Ｃ','Ｄ'][j]}）${o}</span>`).join('')}
+      ${q.analysis?`<div class="text-muted mt4" style="font-size:11px">解析：${q.analysis}</div>`:''}
+      <div class="flex gap8 mt4">
+        <span class="tag" style="font-size:10px">${q.difficulty||'中'}</span>
+        <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger);font-size:11px;padding:1px 6px" onclick="deleteGrammarQuestion('${q.id}',this)">刪除</button>
+      </div>
+    </div>`).join('')}
+  </div>`;
+  document.body.appendChild(modal);
+};
+
+window.deleteGrammarQuestion = async function(qid, btn){
+  if(!confirm('確定刪除此題？')) return;
+  await delOne('grammar_questions', qid);
+  btn.closest('[style*="border-bottom"]').remove();
+};
+
+// ── student grammar quiz ──────────────────────────────────────
+async function renderGrammarSets(){
+  const view = document.getElementById('grammar-sets-view');
+  const list = document.getElementById('grammar-sets-list');
+  if(!list) return;
+  document.getElementById('grammar-sets-view').style.display='block';
+  document.getElementById('grammar-quiz-view').style.display='none';
+  document.getElementById('grammar-result-view').style.display='none';
+  list.innerHTML='<p class="text-muted text-sm text-center" style="padding:24px">載入中...</p>';
+  const sets = await getAll('grammar_sets');
+  sets.sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
+  if(!sets.length){ list.innerHTML='<p class="text-muted text-sm text-center" style="padding:24px">目前尚無文法題組</p>'; return; }
+  list.innerHTML='';
+  for(const gs of sets){
+    const qCount=(await getAll('grammar_questions')).filter(q=>q.setId===gs.id).length;
+    if(!qCount) continue;
+    const card=document.createElement('div');
+    card.className='card mb8';
+    card.style.cssText='cursor:pointer;transition:box-shadow 0.15s';
+    card.onmouseenter=()=>card.style.boxShadow='0 2px 12px rgba(37,99,235,0.15)';
+    card.onmouseleave=()=>card.style.boxShadow='';
+    card.innerHTML=`<div class="flex gap8" style="align-items:center">
+      <div style="flex:1">
+        <div class="bold">${gs.name}</div>
+        ${gs.desc?`<div class="text-muted text-sm">${gs.desc}</div>`:''}
+        <div class="text-muted text-sm mt4">共 ${qCount} 題</div>
+      </div>
+      <button class="btn btn-p">開始測驗 →</button>
+    </div>`;
+    card.onclick=()=>startGrammarQuiz(gs.id, gs.name);
+    list.appendChild(card);
+  }
+  if(!list.children.length) list.innerHTML='<p class="text-muted text-sm text-center" style="padding:24px">目前尚無文法題組</p>';
+}
+
+async function startGrammarQuiz(sid, sname){
+  GQ = (await getAll('grammar_questions')).filter(q=>q.setId===sid);
+  if(!GQ.length){ alert('此題組尚無題目'); return; }
+  GQ = shuffle([...GQ]);
+  GI=0; GCorrect=0; GScore=0; grammarWrong=[];
+  currentGrammarSet=sid;
+  document.getElementById('grammar-quiz-title').textContent=sname;
+  document.getElementById('grammar-sets-view').style.display='none';
+  document.getElementById('grammar-quiz-view').style.display='block';
+  document.getElementById('grammar-result-view').style.display='none';
+  showGrammarQuestion();
+}
+
+function showGrammarQuestion(){
+  const card=document.getElementById('grammar-quiz-card');
+  const prog=document.getElementById('grammar-quiz-progress');
+  if(GI>=GQ.length){ finishGrammarQuiz(); return; }
+  const q=GQ[GI];
+  prog.textContent=`${GI+1} / ${GQ.length}`;
+  const pct=Math.round(GI/GQ.length*100);
+  const labels=['Ａ','Ｂ','Ｃ','Ｄ'];
+  card.innerHTML=`
+    <div style="height:4px;background:var(--border);border-radius:2px;margin-bottom:16px">
+      <div style="height:100%;background:var(--brand);border-radius:2px;width:${pct}%;transition:width 0.3s"></div>
+    </div>
+    <div class="text-muted text-sm mb8">第 ${GI+1} 題 · ${q.difficulty||'中'}</div>
+    <div class="bold mb16" style="font-size:16px;line-height:1.6">${q.q.replace(/　　　/g,'<span style="border-bottom:2px solid var(--brand);padding:0 20px;margin:0 4px">　　</span>')}</div>
+    <div id="grammar-opts">
+      ${q.opts.map((o,i)=>`
+        <button class="btn mb8" style="width:100%;text-align:left;padding:10px 14px;font-size:14px"
+          onclick="answerGrammar(${i})">
+          <span style="font-weight:700;margin-right:8px">（${labels[i]}）</span>${o}
+        </button>`).join('')}
+    </div>`;
+}
+
+window.answerGrammar = function(idx){
+  const q=GQ[GI];
+  const correct=idx===q.ans;
+  if(correct){ GCorrect++; GScore+=5; }
+  else grammarWrong.push({...q, chosen: idx});
+  // Show feedback
+  const opts=document.getElementById('grammar-opts');
+  opts.querySelectorAll('button').forEach((btn,i)=>{
+    btn.disabled=true;
+    if(i===q.ans) btn.style.cssText='width:100%;text-align:left;padding:10px 14px;font-size:14px;margin-bottom:8px;background:var(--sl);border-color:var(--success);color:var(--success)';
+    else if(i===idx&&!correct) btn.style.cssText='width:100%;text-align:left;padding:10px 14px;font-size:14px;margin-bottom:8px;background:var(--dl);border-color:var(--danger);color:var(--danger)';
+  });
+  const labels=['Ａ','Ｂ','Ｃ','Ｄ'];
+  const feedbackDiv=document.createElement('div');
+  feedbackDiv.style.cssText='margin-top:12px;padding:12px;background:var(--bg);border-radius:8px;border-left:3px solid '+(correct?'var(--success)':'var(--danger)');
+  feedbackDiv.innerHTML=`<div style="font-weight:700;margin-bottom:4px;color:${correct?'var(--success)':'var(--danger)'}">${correct?'✓ 正確！':'✗ 答錯了'}</div>
+    ${!correct?`<div class="text-sm mb4">正確答案：（${labels[q.ans]}）${q.opts[q.ans]}</div>`:''}
+    ${q.analysis?`<div class="text-muted text-sm">💡 ${q.analysis}</div>`:''}
+    <button class="btn btn-p mt8" style="width:100%" onclick="nextGrammarQuestion()">下一題 →</button>`;
+  document.getElementById('grammar-quiz-card').appendChild(feedbackDiv);
+};
+
+window.nextGrammarQuestion = function(){
+  GI++;
+  showGrammarQuestion();
+};
+
+async function finishGrammarQuiz(){
+  const pct=Math.round(GCorrect/GQ.length*100);
+  document.getElementById('grammar-quiz-view').style.display='none';
+  document.getElementById('grammar-result-view').style.display='block';
+  document.getElementById('grammar-result-emoji').textContent=pct>=80?'🎉':pct>=50?'👍':'📖';
+  document.getElementById('grammar-result-title').textContent=pct>=80?'太棒了！':pct>=50?'不錯喔！':'繼續加油！';
+  document.getElementById('grammar-result-subtitle').textContent=`正確率 ${pct}%，獲得 ${GScore} 積分`;
+  document.getElementById('gr-correct').textContent=`${GCorrect}/${GQ.length}`;
+  document.getElementById('gr-pct').textContent=pct+'%';
+  document.getElementById('gr-pts').textContent='+'+GScore;
+  // Show wrong answers
+  const wl=document.getElementById('grammar-wrong-list');
+  if(grammarWrong.length){
+    const labels=['Ａ','Ｂ','Ｃ','Ｄ'];
+    wl.innerHTML=`<div class="bold text-sm mb8" style="color:var(--danger);text-align:left">❌ 答錯的題目</div>`+
+      grammarWrong.map(q=>`<div style="text-align:left;background:var(--dl);border-radius:6px;padding:10px;margin-bottom:6px;font-size:13px">
+        <div class="bold mb4">${q.q}</div>
+        <div style="color:var(--danger)">你選：（${labels[q.chosen]}）${q.opts[q.chosen]}</div>
+        <div style="color:var(--success)">正解：（${labels[q.ans]}）${q.opts[q.ans]}</div>
+        ${q.analysis?`<div class="text-muted mt4" style="font-size:11px">💡 ${q.analysis}</div>`:''}
+      </div>`).join('');
+  } else { wl.innerHTML=''; }
+  // Save score
+  if(GScore>0 && CU_DATA){
+    const u=CU_DATA;
+    u.score=(u.score||0)+GScore;
+    await updateOne('users',CU.id,{score:u.score});
+    document.getElementById('stu-score').textContent=u.score;
+  }
+}
+
+window.exitGrammarQuiz = function(){
+  document.getElementById('grammar-sets-view').style.display='block';
+  document.getElementById('grammar-quiz-view').style.display='none';
+  document.getElementById('grammar-result-view').style.display='none';
+  renderGrammarSets();
+};
 
 // ── speech synthesis ─────────────────────────────────────────
 let speechVoice = null;
@@ -1542,9 +1879,10 @@ async function fetchWordImage(word){
 
 // ── ADMIN ─────────────────────────────────────────────────────
 window.adminTab=function(t,el){
+  if(t==='grammar') setTimeout(renderAdminGrammar, 50);
   document.querySelectorAll('#s-admin .tab').forEach(x=>x.classList.remove('active'));
   if(el)el.classList.add('active');
-  ['accounts','classes','words','import','courses','students','settings'].forEach(n=>{
+  ['accounts','classes','words','import','courses','students','settings','grammar'].forEach(n=>{
     const el2=document.getElementById('at-'+n);if(el2)el2.style.display=n===t?'block':'none';
   });
   if(t==='accounts')renderAccountList();
@@ -3135,6 +3473,7 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
     <div class="tab" onclick="stuTab('badges',this)">成就</div>
     <div class="tab" onclick="stuTab('search',this)">查字</div>
     <div class="tab" onclick="stuTab('notebook',this)">複習本</div>
+    <div class="tab" onclick="stuTab('grammar',this)">文法</div>
   </div>
 
   <div id="t-home">
@@ -3262,6 +3601,35 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
     <div id="stu-search-results"><p class="text-muted text-sm" style="text-align:center;padding:24px">輸入關鍵字開始搜尋</p></div>
   </div>
 
+  <div id="t-grammar" style="display:none">
+    <div id="grammar-sets-view">
+      <div class="bold mb12">📝 文法測驗</div>
+      <div id="grammar-sets-list"><p class="text-muted text-sm text-center" style="padding:24px">載入中...</p></div>
+    </div>
+    <div id="grammar-quiz-view" style="display:none">
+      <div class="flex gap8 mb12" style="align-items:center">
+        <button class="btn btn-sm" onclick="exitGrammarQuiz()">← 返回</button>
+        <div class="bold" id="grammar-quiz-title" style="flex:1"></div>
+        <span class="text-muted text-sm" id="grammar-quiz-progress"></span>
+      </div>
+      <div id="grammar-quiz-card" class="card"></div>
+    </div>
+    <div id="grammar-result-view" style="display:none">
+      <div style="text-align:center;padding:24px 0">
+        <div style="font-size:48px;margin-bottom:8px" id="grammar-result-emoji">🎉</div>
+        <h2 id="grammar-result-title"></h2>
+        <p class="text-muted" id="grammar-result-subtitle"></p>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:16px 0">
+          <div class="stat-card"><div class="stat-label">答對</div><div class="stat-num" id="gr-correct"></div></div>
+          <div class="stat-card"><div class="stat-label">正確率</div><div class="stat-num" id="gr-pct"></div></div>
+          <div class="stat-card"><div class="stat-label">獲得積分</div><div class="stat-num" style="color:var(--brand)" id="gr-pts"></div></div>
+        </div>
+        <div id="grammar-wrong-list" class="mb12"></div>
+        <button class="btn btn-p" style="width:100%" onclick="exitGrammarQuiz()">返回題組列表</button>
+      </div>
+    </div>
+  </div>
+
   <div id="t-notebook" style="display:none">
     <div class="flex gap8 mb12" style="justify-content:space-between;align-items:center">
       <h3>📌 單字複習本</h3>
@@ -3295,6 +3663,7 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
     <div class="tab" onclick="adminTab('courses',this)">課程管理</div>
     <div class="tab" onclick="adminTab('students',this)">學生進度</div>
     <div class="tab" onclick="adminTab('settings',this)">設定</div>
+    <div class="tab" onclick="adminTab('grammar',this)">文法題庫</div>
   </div>
 
   <div id="at-accounts" style="display:none">
@@ -3417,6 +3786,48 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
     </div>
     <div id="student-list-view"><div class="loading">載入中...</div></div>
     <div id="student-detail-view" style="display:none"></div>
+  </div>
+
+  <div id="at-grammar" style="display:none">
+    <div class="card mb12">
+      <div class="bold mb8">📝 文法題組管理</div>
+      <p class="text-muted text-sm mb12">建立題組後，可匯入選擇題題目。學生可在「文法」頁籤選題組作答。</p>
+      <div class="flex gap8 mb12">
+        <input id="grammar-set-name" class="mb0" placeholder="題組名稱（例：國一下 Unit 1）" style="flex:1"/>
+        <input id="grammar-set-desc" class="mb0" placeholder="說明（選填）" style="flex:1"/>
+        <button class="btn btn-p" onclick="addGrammarSet()">新增題組</button>
+      </div>
+      <div id="grammar-set-list"><p class="text-muted text-sm">載入中...</p></div>
+    </div>
+    <div class="card" id="grammar-import-panel" style="display:none">
+      <div class="flex gap8 mb8">
+        <div class="bold" id="grammar-import-title">匯入題目</div>
+        <button class="btn btn-sm" style="margin-left:auto" onclick="document.getElementById('grammar-import-panel').style.display='none'">✕ 關閉</button>
+      </div>
+      <p class="text-muted text-sm mb8">支援貼上解析卷文字，或上傳 docx 檔案。系統會自動解析選擇題。</p>
+      <div class="flex gap8 mb8">
+        <label class="btn btn-sm" style="cursor:pointer">
+          📂 上傳 docx
+          <input type="file" accept=".docx" style="display:none" onchange="importGrammarDocx(this)"/>
+        </label>
+        <span class="text-muted text-sm" style="line-height:32px">或直接貼上文字：</span>
+      </div>
+      <textarea id="grammar-import-text" style="width:100%;height:200px;font-size:13px;border:1px solid var(--border);border-radius:8px;padding:10px;resize:vertical" placeholder="貼上解析卷文字格式：
+
+- (   ) 題目文字
+(Ａ) 選項A　(Ｂ) 選項B　(Ｃ) 選項C　(Ｄ) 選項D
+
+答案：(Ａ)
+
+解析：解析文字
+
+難易度：易"></textarea>
+      <div class="flex gap8 mt8">
+        <button class="btn btn-p" onclick="parseAndImportGrammar()">解析並匯入</button>
+        <span id="grammar-import-msg" class="text-sm" style="line-height:32px"></span>
+      </div>
+      <div id="grammar-preview" class="mt8"></div>
+    </div>
   </div>
 
   <div id="at-settings" style="display:none">
