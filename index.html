@@ -817,62 +817,71 @@ window.openGrammarImport = function(sid, sname){
 // Parse grammar questions from text (supports the 解析卷 format)
 function parseGrammarText(text){
   const questions = [];
-  // Split by question markers: lines starting with "- (   )" or numbered
-  const blocks = text.split(/\n(?=[-]\s*\([\s　]*\))/);
-  blocks.forEach(block => {
-    block = block.trim();
-    if(!block) return;
-    // Extract question text (first line, remove leading "- (   )")
-    const lines = block.split('\n').map(l=>l.trim()).filter(l=>l);
-    if(!lines.length) return;
-    // Question line
-    let qLine = lines[0].replace(/^[-\-]\s*\([\s　]*\)\s*/, '').trim();
-    if(!qLine) return;
-    // Find options line (contains Ａ Ｂ Ｃ Ｄ or A B C D)
-    let optLine = '', answerLine = '', analysisLine = '', diffLine = '';
-    for(let i=1; i<lines.length; i++){
-      const l = lines[i];
-      if(/[（(][ＡAaａ][）)]/.test(l) && !optLine) optLine = l;
-      else if(/^答案[：:]/.test(l)) answerLine = l;
-      else if(/^解析[：:]/.test(l)) analysisLine = l;
-      else if(/^難易度[：:]/.test(l)) diffLine = l;
+  // Normalize: replace full-width spaces with regular spaces for easier parsing
+  // Split into blocks by double newline, find blocks containing question markers
+  const rawBlocks = text.split(/\n\n+/);
+  
+  // Group into question units: a question unit starts with "- (   )" line
+  const units = [];
+  let current = null;
+  rawBlocks.forEach(block => {
+    const trimmed = block.trim();
+    if(!trimmed) return;
+    if(/^[-－]\s*[（(][\s　]*[）)]/.test(trimmed)){
+      if(current) units.push(current);
+      current = [trimmed];
+    } else if(current) {
+      current.push(trimmed);
     }
-    if(!optLine) return;
-    // Parse options
-    const optRegex = /[（(][ＡAａa][）)]\s*([^（(]+)/g;
-    const fullOpts = ['A','B','C','D'];
-    const fullOptsFull = ['Ａ','Ｂ','Ｃ','Ｄ'];
+  });
+  if(current) units.push(current);
+
+  units.forEach(unit => {
+    // unit[0] = question line (may include options on same line separated by newline)
+    // unit[1] = options line (if separate)
+    // unit[n] = 答案/解析/難易度 lines
+    
+    let qLine = '', optLine = '', answerLine = '', analysisLine = '', diffLine = '';
+    
+    // Flatten all lines in unit
+    const allLines = unit.join('\n').split('\n').map(l=>l.trim()).filter(l=>l);
+    
+    allLines.forEach((l, i) => {
+      if(i===0){
+        qLine = l.replace(/^[-－]\s*[（(][\s　]*[）)]\s*/, '').trim();
+      } else if(/[（(][ＡA][）)]/.test(l) && !optLine){
+        optLine = l;
+      } else if(/^答案[：:]/.test(l)){
+        answerLine = l;
+      } else if(/^解析[：:]/.test(l)){
+        analysisLine = l;
+      } else if(/^難易度[：:]/.test(l)){
+        diffLine = l;
+      }
+    });
+    
+    if(!qLine || !optLine || !answerLine) return;
+    
+    // Parse options - handle both fullwidth (Ａ) and halfwidth (A) with （） or ()
     const opts = [];
-    // Try fullwidth pattern first
-    const fw = optLine.match(/[（(][ＡＢＣＤ][）)]\s*([^（(）)]+)/g);
-    if(fw && fw.length >= 2){
-      fw.forEach(o => {
-        const m = o.match(/[（(][ＡＢＣＤ][）)]\s*(.+)/);
-        if(m) opts.push(m[1].trim());
-      });
-    } else {
-      // Try halfwidth
-      const hw = optLine.match(/[（(][ABCD][）)]\s*([^（(）)]+)/g);
-      if(hw) hw.forEach(o => {
-        const m = o.match(/[（(][ABCD][）)]\s*(.+)/);
-        if(m) opts.push(m[1].trim());
-      });
+    const optPattern = /[（(][ＡＢＣＤABCDａｂｃｄabcd][）)]\s*([^（(）)　	]+(?:[　	][^（(）)　	]+)*)/g;
+    let m;
+    while((m = optPattern.exec(optLine)) !== null){
+      const val = m[1].replace(/[　\s]+$/, '').trim();
+      if(val) opts.push(val);
     }
     if(opts.length < 2) return;
+    
     // Parse answer
     const ansMat = answerLine.match(/[（(]([ＡＢＣＤABCDａｂｃｄabcd])[）)]/);
     if(!ansMat) return;
     const ansChar = ansMat[1];
     const ansIdx = 'ＡＢＣＤABCDａｂｃｄabcd'.indexOf(ansChar) % 4;
+    
     const analysis = analysisLine.replace(/^解析[：:]\s*/, '').trim();
     const difficulty = diffLine.replace(/^難易度[：:]\s*/, '').trim() || '中';
-    questions.push({
-      q: qLine,
-      opts,
-      ans: ansIdx,
-      analysis,
-      difficulty
-    });
+    
+    questions.push({ q: qLine, opts, ans: ansIdx, analysis, difficulty });
   });
   return questions;
 }
