@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>VocabMaster</title>
+<script src="https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js"></script>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getFirestore, collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
@@ -918,11 +919,9 @@ window.importGrammarDocx = async function(input){
   const msg = document.getElementById('grammar-import-msg');
   msg.style.color='var(--muted)'; msg.textContent='讀取 docx 中...';
   try{
-    // Use mammoth to extract text from docx
     const arrayBuffer = await file.arrayBuffer();
-    const mammoth = await import('https://cdn.jsdelivr.net/npm/mammoth@1.6.0/mammoth.browser.min.js').catch(()=>null);
-    if(!mammoth){ msg.style.color='var(--danger)'; msg.textContent='無法載入 docx 解析器，請改用貼上文字方式'; return; }
-    const result = await mammoth.default.extractRawText({arrayBuffer});
+    if(typeof mammoth === 'undefined'){ msg.style.color='var(--danger)'; msg.textContent='無法載入 docx 解析器，請改用貼上文字方式'; return; }
+    const result = await mammoth.extractRawText({arrayBuffer});
     document.getElementById('grammar-import-text').value = result.value;
     msg.style.color='var(--success)'; msg.textContent='✓ 已讀取 docx，請確認後點「解析並匯入」';
   }catch(e){ msg.style.color='var(--danger)'; msg.textContent='讀取失敗：'+e.message; }
