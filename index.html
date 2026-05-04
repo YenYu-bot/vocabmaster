@@ -512,6 +512,7 @@ window.renderStuSearch=function(){
   if(!matched.length){results.innerHTML='<p class="text-muted text-sm" style="text-align:center;padding:24px">找不到符合的單字</p>';return;}
   const known=CU_DATA?.known||{};const sr=CU_DATA?.sr||{};
   results.innerHTML='';
+  const _searchCards=[];
   matched.slice(0,50).forEach(w=>{
     const course=(w._ac||AC).find(c=>c.id===w.cid);
     const isKnown=!!known[w.id];
@@ -532,7 +533,7 @@ window.renderStuSearch=function(){
     const hiZh=w.zh.replace(new RegExp('('+escRe(q)+')','gi'),'<mark style="background:var(--wl);border-radius:2px">$1</mark>');
     card.innerHTML=`<div class="flex gap8 mb8">
       <div style="flex:1">
-        <span class="bold" style="font-size:16px">${hiEn}</span>
+        <span class="bold en-syllable" data-word="${w.en.replace(/"/g,'&quot;')}" style="font-size:16px">${hiEn}</span>
         ${w.phonetic?`<span class="text-muted" style="font-size:12px"> [${w.phonetic}]</span>`:''}
         ${w.pos?`<span class="tag tag-a" style="font-size:11px;margin-left:4px">${w.pos}</span>`:''}
       </div>
@@ -546,6 +547,7 @@ window.renderStuSearch=function(){
     </div>`;
     results.appendChild(card);
   });
+  colorSyllableSpans(results);
   if(matched.length>50) results.innerHTML+=`<p class="text-muted text-sm" style="text-align:center;padding:8px">還有 ${matched.length-50} 個結果，請輸入更精確的關鍵字</p>`;
 };
 
@@ -930,6 +932,14 @@ function getSyllables(word){
     syllableCache[key] = splitSyllables(word);
   }
   return syllableCache[key];
+}
+
+// Apply syllable colors to all .en-syllable[data-word] spans in a container (or document)
+function colorSyllableSpans(container){
+  (container||document).querySelectorAll('.en-syllable[data-word]').forEach(sp=>{
+    const parts=getSyllables(sp.dataset.word);
+    if(parts.length>1) sp.innerHTML=syllableHTML(parts,'14px');
+  });
 }
 
 function syllableHTML(parts, fontSize){
@@ -1417,12 +1427,13 @@ function showResult(){
       suggestDiv.innerHTML=`<div style="background:var(--sl);border-radius:8px;padding:14px">
         <div class="bold text-sm mb8" style="color:var(--success)">🎉 這些複習本單字你答對了！</div>
         ${removableWords.map(w=>`<div style="display:flex;align-items:center;justify-content:space-between;padding:5px 8px;background:#fff;border-radius:6px;margin-bottom:5px">
-          <span class="bold text-sm">${w.en}</span><span class="text-muted text-sm">${w.zh}</span>
+          <span class="bold text-sm en-syllable" data-word="${w.en.replace(/"/g,'&quot;')}">${w.en}</span><span class="text-muted text-sm">${w.zh}</span>
           <button class="btn btn-sm" onclick="removeFromNotebookUI('${w.id}',this)" style="color:var(--success);border-color:var(--success);font-size:12px">移出</button>
         </div>`).join('')}
         <button class="btn mt8" style="width:100%;font-size:13px" onclick="removeAllSuggested(${JSON.stringify(correctInQuiz)},this)">全部移出複習本</button>
       </div>`;
       container.appendChild(suggestDiv);
+      colorSyllableSpans(suggestDiv);
     }
     window._quizSource=null;
   }
@@ -1431,8 +1442,16 @@ window.resetQuiz=function(){document.getElementById('quiz-setup').style.display=
 
 // ── rank ──────────────────────────────────────────────────────
 let rankMode = 'class'; // 'class' | 'school'
+let _rankCache = null, _rankCacheTime = 0, _rankCacheMode = '';
 async function renderRank(){
   const list=document.getElementById('rank-list');
+  const now = Date.now();
+  // use cache if same mode and within 30 seconds
+  if(_rankCache && _rankCacheMode===rankMode && now-_rankCacheTime<30000){
+    list.innerHTML='';
+    _rankCache.forEach(row=>list.appendChild(row.cloneNode(true)));
+    return;
+  }
   list.innerHTML='<div class="loading">載入中...</div>';
   let allUsers=(await getAll('users')).filter(u=>u.role!=='admin');
   // filter by class if class mode
@@ -1449,12 +1468,16 @@ async function renderRank(){
   allUsers.sort((a,b)=>b.score-a.score);
   list.innerHTML='';
   if(!allUsers.length){list.innerHTML='<p class="text-muted text-sm" style="padding:8px">暫無排名資料</p>';return;}
+  list.innerHTML='';
+  const renderedRows=[];
   allUsers.forEach((u,i)=>{
     const isMe=u.id===CU.id;const medal=i===0?'🥇':i===1?'🥈':i===2?'🥉':'';
     const row=document.createElement('div');row.className='rank-row';
     row.innerHTML=`<div style="width:28px;text-align:center;font-size:15px">${medal||'<span style="font-size:13px;color:var(--muted)">#'+(i+1)+'</span>'}</div><div class="avatar" style="${isMe?'background:var(--brand);color:#fff':''}">${(u.name||u.id)[0]}</div><div style="flex:1"><div class="bold text-sm">${u.name||u.id}${isMe?' <span style="color:var(--brand)">(我)</span>':''}</div><div class="text-muted" style="font-size:12px">已學 ${Object.keys(u.known||{}).length} 個・完成 ${(u.completed_courses||[]).length} 課</div></div><div class="bold" style="color:var(--brand);font-size:16px">${u.score||0} 分</div>`;
     list.appendChild(row);
+    renderedRows.push(row);
   });
+  _rankCache=renderedRows; _rankCacheTime=Date.now(); _rankCacheMode=rankMode;
 }
 window.switchRankMode=function(mode,btn){
   rankMode=mode;
@@ -2320,7 +2343,22 @@ window.importWords=async function(){
     text.split('\n').forEach(line=>{const p=line.split(',').map(s=>s.trim());if(p.length<2||!p[0])return;const ex=p.slice(3).join(',').trim();rows.push({id:'w'+Date.now()+Math.random().toString(36).slice(2,7),en:p[0],zh:p[1],pos:p[2]||'',ex,cid,createdAt:Date.now()});});
   }
   if(!rows.length){msg.innerHTML='<div class="notice notice-i">沒有可匯入的資料</div>';return;}
-  try{await Promise.all(rows.map(r=>setOne('words',r.id,r)));AW=[...AW,...rows];document.getElementById('import-text').value='';msg.innerHTML=`<div class="notice notice-s">✓ 成功匯入 ${rows.length} 個單字！</div>`;window.renderWords();}
+  // 檢查重複：同一課程內已有相同英文單字
+  const duplicates=rows.filter(r=>AW.some(w=>w.cid===cid&&w.en.toLowerCase()===r.en.toLowerCase()));
+  const newRows=rows.filter(r=>!AW.some(w=>w.cid===cid&&w.en.toLowerCase()===r.en.toLowerCase()));
+  if(duplicates.length&&!newRows.length){
+    msg.innerHTML=`<div class="notice notice-i">⚠️ 全部 ${duplicates.length} 個單字在此課程中已存在（${duplicates.map(r=>r.en).join('、')}），未匯入任何單字。</div>`;
+    return;
+  }
+  if(duplicates.length){
+    const go=confirm(`以下 ${duplicates.length} 個單字在此課程中已存在，將略過不匯入：
+${duplicates.map(r=>r.en).join('、')}
+
+繼續匯入其餘 ${newRows.length} 個單字？`);
+    if(!go) return;
+  }
+  try{await Promise.all(newRows.map(r=>setOne('words',r.id,r)));AW=[...AW,...newRows];document.getElementById('import-text').value='';
+  msg.innerHTML=`<div class="notice notice-s">✓ 成功匯入 ${newRows.length} 個單字${duplicates.length?' （略過 '+duplicates.length+' 個重複）':''}！</div>`;window.renderWords();}
   catch(e){msg.innerHTML=`<div class="notice notice-e">匯入失敗：${e.message}</div>`;}
 };
 window.toggleBox=function(id){const b=document.getElementById(id);b.style.display=b.style.display==='none'?'block':'none';};
@@ -2610,9 +2648,11 @@ window.exportGrades=async function(){
   const days=parseInt(prompt('匯出近幾天的每日任務記錄？（預設14天）','14')||'14');
   if(isNaN(days)||days<1){alert('請輸入有效天數');return;}
   const allUsers=await getAll('users');
-  const accounts=await getAll('accounts');
-  const allCourses=await getAll('courses');
-  const allWords=await getAll('words');
+  const accounts = window._cachedAccounts && Date.now()-window._cachedAccountsTime<120000
+    ? window._cachedAccounts
+    : await getAll('accounts').then(r=>{ window._cachedAccounts=r; window._cachedAccountsTime=Date.now(); return r; });
+  const allCourses = AC.length ? AC : await getAll('courses');
+  const allWords   = AW.length ? AW : await getAll('words');
   const students=accounts.filter(a=>a.role==='student').sort((a,b)=>a.id.localeCompare(b.id));
   // build date headers using UTC+8
   const dateHeaders=[];
@@ -2686,8 +2726,10 @@ window.renderStudentList=async function(){
   const planWords=planIds.map(id=>AW.find(w=>w.id===id)).filter(Boolean);
   const isManualPlan=!!(APP_SETTINGS.todayPlan?.wordIds?.length);
   let allUsers=(await getAll('users')).filter(u=>u.role!=='admin');
-  // filter by class
-  const accounts=await getAll('accounts');
+  // use already-loaded accounts from ALL_CLASSES context; only fetch if needed
+  const accounts = window._cachedAccounts && Date.now()-window._cachedAccountsTime<120000
+    ? window._cachedAccounts
+    : await getAll('accounts').then(r=>{ window._cachedAccounts=r; window._cachedAccountsTime=Date.now(); return r; });
   if(!isSuperAdminView&&assignedClassesView.length>0){
     // normal admin: only see students in assigned classes
     const inAssigned=new Set(accounts.filter(a=>(a.classes||[]).some(c=>assignedClassesView.includes(c))).map(a=>a.id));
