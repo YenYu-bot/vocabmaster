@@ -973,18 +973,31 @@ window.importGrammarDocx = async function(input){
   try{
     const arrayBuffer = await file.arrayBuffer();
     if(typeof mammoth === 'undefined'){ msg.style.color='var(--danger)'; msg.textContent='無法載入 docx 解析器，請改用貼上文字方式'; return; }
-    const result = await mammoth.convertToHtml({arrayBuffer});
-    // Convert HTML to plain text, preserving underlined blanks as ______
+    // Use mammoth with a transform to detect underlined whitespace (fill-in-the-blank blanks)
+    const transformElement = (el) => {
+      // underlined runs whose text is all whitespace/ideographic spaces → replace with ______
+      if (el.type === 'run' && el.styleId !== undefined) return el;
+      return el;
+    };
+    const result = await mammoth.convertToHtml({arrayBuffer}, {
+      styleMap: ["u => u"]
+    });
     const div = document.createElement('div');
     div.innerHTML = result.value;
-    // Replace <u>...</u> with underscores (fill-in-the-blank)
+    // <u> that contains only whitespace/ideographic spaces = fill-in-the-blank
     div.querySelectorAll('u').forEach(u => {
-      const len = Math.max(6, u.textContent.replace(/[\s　]/g,'').length || 6);
-      u.replaceWith('_'.repeat(len));
+      const txt = u.textContent;
+      const isBlank = /^[\s\u3000\u00a0]+$/.test(txt) || txt.trim() === '';
+      if (isBlank) {
+        // count ideographic spaces as blank slots (each 　 = 1 char)
+        const slots = txt.replace(/[^\u3000]/g, '').length || Math.max(3, Math.round(txt.length / 1.5));
+        u.replaceWith('_'.repeat(Math.max(6, slots * 2)));
+      } else {
+        // underlined real text → keep as-is (e.g. proper nouns)
+        u.replaceWith(txt);
+      }
     });
-    // Strip bold/italic wrappers, keep text
     div.querySelectorAll('strong,b,em,i').forEach(el => el.replaceWith(el.textContent));
-    // Block elements -> newlines
     div.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
     div.querySelectorAll('p,li,div').forEach(el => el.insertAdjacentText('afterend','\n'));
     let plainText = div.textContent.replace(/\n{3,}/g,'\n\n').trim();
