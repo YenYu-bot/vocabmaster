@@ -859,34 +859,57 @@ function parseGrammarText(text){
     const difficulty = diffMat ? diffMat[1].trim() : '中';
     
     // Extract question+options from END of chunkBefore
-    // Find lines that contain question markers or option patterns
     const lines = chunkBefore.split('\n').map(l=>l.trim()).filter(l=>l);
-    
-    // Find the last block that looks like a question (contains （ ） or ( ) marker, OR contains options)
-    // Walk backwards from end to find options line and question line
-    let optLine = '', qLines = [];
+
+    // Walk backwards: find the options line first (contains （Ａ）etc.)
+    // then find the question line (may be the same line, the line before, or marked with (   ))
+    let optLine = '', qLine = '';
     for(let j = lines.length-1; j >= 0; j--){
       const l = lines[j];
-      if(/[（(][ＡＢＣＤABCDａｂｃｄabcd][）)]/.test(l) && !optLine){
-        optLine = l; // this line has options
-      } else if(optLine && /[（(][\s　]*[）)]/.test(l)){
-        qLines.unshift(l.replace(/^[-－]\s*[（(][\s　]*[）)]\s*/,'').trim());
+      // Options line: contains （Ａ） or (A) style options
+      if(!optLine && /[（(][ＡＢＣＤABCDａｂｃｄabcd][）)]/.test(l)){
+        optLine = l;
+
+        // Case 1: same line has question marker (   ) before first option
+        // e.g. "- (   ) 題目文字 （Ａ）..."
+        const sameLineQ = l.replace(/^[-－•]\s*/,'');
+        const qMarkerMatch = sameLineQ.match(/^[（(][\s　]*[）)]\s*([\s\S]+?)(?=[（(][ＡＢＣＤABCDａｂｃｄabcd][）)])/);
+        if(qMarkerMatch){
+          qLine = qMarkerMatch[1].trim();
+          break;
+        }
+
+        // Case 2: question text is on the previous non-empty line(s)
+        // collect lines upward until we hit a question marker line or preamble
+        const qParts = [];
+        for(let k = j-1; k >= 0; k--){
+          const prev = lines[k];
+          if(!prev) continue;
+          if(/^(解析|難易度|\[|\])/.test(prev)) break;
+          // If this line itself is the question marker line
+          const markerMatch = prev.match(/[-－•]?\s*[（(][\s　]*[）)]\s*([\s\S]*)/);
+          if(markerMatch){
+            const afterMarker = markerMatch[1].trim();
+            if(afterMarker) qParts.unshift(afterMarker);
+            break;
+          }
+          // Otherwise it's part of the question text (e.g. continuation)
+          qParts.unshift(prev);
+          // If this line doesn't end mid-sentence stop here (single-line question)
+          if(!/[　\s]$/.test(prev)) break;
+        }
+        if(qParts.length) qLine = qParts.join(' ').trim();
         break;
-      } else if(optLine && l && !/^(解析|難易度|\[)/.test(l)){
-        // This might be part of question text
-        qLines.unshift(l);
       }
     }
-    
-    // If we didn't find separate qLine, the question might be in the same line as options
-    let qLine = qLines.join(' ').trim();
+
     if(!qLine && optLine){
-      // Try to extract question from beginning of optLine before first option
-      const beforeFirst = optLine.replace(/^[-－]?\s*[（(][\s　]*[）)]\s*/,'');
+      // Last resort: strip the (   ) marker from optLine prefix
+      const beforeFirst = optLine.replace(/^[-－•]?\s*[（(][\s　]*[）)]\s*/,'');
       const firstOptIdx = beforeFirst.search(/[（(][ＡAａa][）)]/);
       if(firstOptIdx > 0) qLine = beforeFirst.slice(0, firstOptIdx).trim();
     }
-    
+
     if(!qLine || !optLine) continue;
     
     // Parse options
