@@ -1337,6 +1337,14 @@ function splitSyllables(word){
     'classmate':'class-mate','homework':'home-work','birthday':'birth-day',
     'everything':'ev-ery-thing','somewhere':'some-where','anywhere':'any-where',
     'everywhere':'ev-ery-where','every':'ev-ery',
+    'protest':'pro-test','protests':'pro-tests',
+    'rental':'ren-tal','rentals':'ren-tals',
+    'mental':'men-tal','dental':'den-tal','central':'cen-tral',
+    'measurement':'meas-ure-ment','measurements':'meas-ure-ments',
+    'achievement':'a-chieve-ment','achievements':'a-chieve-ments',
+    'advertisement':'ad-ver-tise-ment',
+    'reading':'read-ing','writing':'writ-ing','speaking':'speak-ing',
+    'listening':'lis-ten-ing','learning':'learn-ing',
     'biography':'bi-og-ra-phy','biographies':'bi-og-ra-phies',
     'revolutionary':'re-vo-lu-tion-ar-y','revolution':'re-vo-lu-tion',
     'evolutionary':'e-vo-lu-tion-ar-y','evolution':'e-vo-lu-tion',
@@ -1394,28 +1402,51 @@ function splitSyllables(word){
     }
   } else if(w.endsWith('est') && w.length > 4){
     const s = w.slice(0,-3);
-    if(!VOWELS.has(s[s.length-1]) && s.length >= 2 && [...s].some(c => VOWELS.has(c))){
+    // Only strip -est when stem ends in consonant AND stem is ≥ 4 chars
+    // (avoids mis-stripping "protest" → "prot")
+    if(!VOWELS.has(s[s.length-1]) && s.length >= 4 && [...s].some(c => VOWELS.has(c))){
       suffix = 'est'; stemW = s; origStemLen = w.length - 3;
     }
   } else {
-    for(const sf of ['ness','less','ful','ly']){
-      if(w.endsWith(sf) && w.length > sf.length + 1){
-        const s = w.slice(0,-sf.length);
-        if([...s].some(c => VOWELS.has(c))){ suffix = sf; stemW = s; origStemLen = w.length - sf.length; break; }
+    // -ment: strip regardless of stem's final char (measure+ment, manage+ment end in vowel)
+    if(w.endsWith('ment') && w.length > 5){
+      const s = w.slice(0,-4);
+      if(s.length >= 2 && [...s].some(c => VOWELS.has(c))){ suffix = 'ment'; stemW = s; origStemLen = w.length - 4; }
+    } else {
+      for(const sf of ['ness','less','ful','ly']){
+        if(w.endsWith(sf) && w.length > sf.length + 1){
+          const s = w.slice(0,-sf.length);
+          if([...s].some(c => VOWELS.has(c))){ suffix = sf; stemW = s; origStemLen = w.length - sf.length; break; }
+        }
       }
     }
   }
 
   // ── Prefix stripping ───────────────────────────────────────────
   // Strip common prefixes from the (already suffix-stripped) stem.
-  // Require the remainder to be ≥ 3 chars to avoid false matches like re+ad.
+  // The remainder (rest) must form a plausible syllable onset:
+  //   • starts with a vowel, OR
+  //   • starts with consonant + vowel (CV), OR
+  //   • starts with a valid onset cluster (blend: pl, tr, str…)
+  // This prevents false splits like rental → re+ntal.
+  const ONSET_PFX = new Set(['bl','br','cl','cr','dr','fl','fr','gl','gr','pl','pr',
+                              'sc','sk','sl','sm','sn','sp','st','sw','tr','tw',
+                              'ch','sh','th','wh','ph','str','spr','spl','scr']);
+  function validRest(r){
+    if(r.length < 3 || ![...r].some(c => VOWELS.has(c))) return false;
+    if(VOWELS.has(r[0])) return true;           // vowel-initial
+    if(r.length >= 2 && VOWELS.has(r[1])) return true;  // CV
+    if(r.length >= 2 && ONSET_PFX.has(r[0]+r[1])) return true; // blend
+    if(r.length >= 3 && ONSET_PFX.has(r[0]+r[1]+r[2])) return true; // 3-char onset
+    return false;
+  }
   const PREFIXES = ['over','under','pre','dis','mis','out','un','re','be','de','en','em','ex','in','im','pro']
                      .sort((a,b) => b.length - a.length);
   let prefix = null, coreW = stemW, origPfxLen = 0;
   for(const pf of PREFIXES){
     if(stemW.startsWith(pf) && stemW.length > pf.length + 1){
       const rest = stemW.slice(pf.length);
-      if(rest.length >= 3 && [...rest].some(c => VOWELS.has(c))){
+      if(validRest(rest)){
         prefix = pf; coreW = rest; origPfxLen = pf.length; break;
       }
     }
