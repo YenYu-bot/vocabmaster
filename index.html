@@ -985,14 +985,9 @@ window.importGrammarDocx = async function(input){
     // Strip bold/italic wrappers, keep text
     div.querySelectorAll('strong,b,em,i').forEach(el => el.replaceWith(el.textContent));
     // Block elements -> newlines
-    div.querySelectorAll('br').forEach(br => br.replaceWith('
-'));
-    div.querySelectorAll('p,li,div').forEach(el => el.insertAdjacentText('afterend','
-'));
-    let plainText = div.textContent.replace(/
-{3,}/g,'
-
-').trim();
+    div.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
+    div.querySelectorAll('p,li,div').forEach(el => el.insertAdjacentText('afterend','\n'));
+    let plainText = div.textContent.replace(/\n{3,}/g,'\n\n').trim();
     document.getElementById('grammar-import-text').value = plainText;
     msg.style.color='var(--success)'; msg.textContent='✓ 已讀取 docx，請確認後點「解析並匯入」';
   }catch(e){ msg.style.color='var(--danger)'; msg.textContent='讀取失敗：'+e.message; }
