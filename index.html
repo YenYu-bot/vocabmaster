@@ -1337,6 +1337,18 @@ function splitSyllables(word){
     'classmate':'class-mate','homework':'home-work','birthday':'birth-day',
     'everything':'ev-ery-thing','somewhere':'some-where','anywhere':'any-where',
     'everywhere':'ev-ery-where','every':'ev-ery',
+    'optional':'op-tion-al','options':'op-tions','option':'op-tion',
+    'expansion':'ex-pan-sion','expansions':'ex-pan-sions',
+    'partial':'par-tial','partially':'par-tial-ly',
+    'special':'spe-cial','especially':'es-pe-cial-ly',
+    'official':'of-fi-cial','officially':'of-fi-cial-ly',
+    'financial':'fi-nan-cial','financially':'fi-nan-cial-ly',
+    'social':'so-cial','socially':'so-cial-ly',
+    'crucial':'cru-cial','crucial':'cru-cial',
+    'initial':'i-ni-tial','initially':'i-ni-tial-ly',
+    'potential':'po-ten-tial','potentially':'po-ten-tial-ly',
+    'essential':'es-sen-tial','essentially':'es-sen-tial-ly',
+    'commercial':'com-mer-cial','artificial':'ar-ti-fi-cial',
     'protest':'pro-test','protests':'pro-tests',
     'rental':'ren-tal','rentals':'ren-tals',
     'mental':'men-tal','dental':'den-tal','central':'cen-tral',
@@ -1457,8 +1469,8 @@ function splitSyllables(word){
   // Priority (longest first): vowel clusters → consonant clusters → diphthongs → single chars
   const DIPH    = ['au','aw','ai','ay','ea','ee','ei','eu','ew','ey','ie','oa','oe','oi','oo','ou','ow','oy','ue','ui'];
   // Vowel clusters that form a single nucleus (treated as one vowel token)
-  // Includes -tion/-sion/-cian which are always one syllable /ʃən/
-  const VCL     = ['tion','sion','cian','ough','augh','eigh','igh'];
+  // Includes -tion/-sion/-cian/-tial/-cial which are always one syllable /ʃən/ or /ʃəl/
+  const VCL     = ['tion','sion','tial','cial','cian','ough','augh','eigh','igh'];
   const CCL     = ['tch','dge','ck','ch','sh','th','ph','wh','gh','ng','nk','qu','gn','wr','kn']
                     .sort((a,b) => b.length - a.length);        // consonant clusters (single token)
   // Clusters that can NEVER start a syllable (always stay with the preceding vowel)
@@ -1500,8 +1512,11 @@ function splitSyllables(word){
       else if(C === 1){
         if(NON_ONSET.has(bt[0].s)) cuts.add(vA+2); else cuts.add(vA+1);
       } else {
+        // Find the LONGEST valid onset that can start the next syllable.
+        // Iterate from take=1 (fewest left, most right) upward so we pick
+        // the maximum onset (e.g. "pl" beats "l" for complain → com-plain).
         let best = 1;
-        for(let take = C-1; take >= 1; take--){
+        for(let take = 1; take <= C-1; take++){
           const rs = bt.slice(take).map(t=>t.s).join('');
           if(isOnset(rs)){ best = C-take; break; }
         }
