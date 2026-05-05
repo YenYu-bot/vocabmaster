@@ -973,8 +973,27 @@ window.importGrammarDocx = async function(input){
   try{
     const arrayBuffer = await file.arrayBuffer();
     if(typeof mammoth === 'undefined'){ msg.style.color='var(--danger)'; msg.textContent='無法載入 docx 解析器，請改用貼上文字方式'; return; }
-    const result = await mammoth.extractRawText({arrayBuffer});
-    document.getElementById('grammar-import-text').value = result.value;
+    const result = await mammoth.convertToHtml({arrayBuffer});
+    // Convert HTML to plain text, preserving underlined blanks as ______
+    const div = document.createElement('div');
+    div.innerHTML = result.value;
+    // Replace <u>...</u> with underscores (fill-in-the-blank)
+    div.querySelectorAll('u').forEach(u => {
+      const len = Math.max(6, u.textContent.replace(/[\s　]/g,'').length || 6);
+      u.replaceWith('_'.repeat(len));
+    });
+    // Strip bold/italic wrappers, keep text
+    div.querySelectorAll('strong,b,em,i').forEach(el => el.replaceWith(el.textContent));
+    // Block elements -> newlines
+    div.querySelectorAll('br').forEach(br => br.replaceWith('
+'));
+    div.querySelectorAll('p,li,div').forEach(el => el.insertAdjacentText('afterend','
+'));
+    let plainText = div.textContent.replace(/
+{3,}/g,'
+
+').trim();
+    document.getElementById('grammar-import-text').value = plainText;
     msg.style.color='var(--success)'; msg.textContent='✓ 已讀取 docx，請確認後點「解析並匯入」';
   }catch(e){ msg.style.color='var(--danger)'; msg.textContent='讀取失敗：'+e.message; }
 };
