@@ -1506,8 +1506,21 @@ function getSyllables(word){
 // Apply syllable colors to all .en-syllable[data-word] spans in a container (or document)
 function colorSyllableSpans(container){
   (container||document).querySelectorAll('.en-syllable[data-word]').forEach(sp=>{
-    const parts=getSyllables(sp.dataset.word);
-    if(parts.length>1) sp.innerHTML=syllableHTML(parts,'14px');
+    const raw = sp.dataset.word;
+    if(!raw) return;
+    if(raw.includes(' ')){
+      // Phrase: colour each word token independently, preserve spaces
+      sp.innerHTML = raw.split(' ').map((token, ti) => {
+        if(!token) return ' ';
+        const parts = getSyllables(token);
+        const coloured = parts.length > 1 ? syllableHTML(parts,'14px') :
+          `<span style="font-size:14px;color:${SYLLABLE_COLORS[0]};font-weight:700">${token}</span>`;
+        return (ti > 0 ? ' ' : '') + coloured;
+      }).join('');
+    } else {
+      const parts = getSyllables(raw);
+      if(parts.length>1) sp.innerHTML=syllableHTML(parts,'14px');
+    }
   });
 }
 
@@ -1520,6 +1533,18 @@ function syllableHTML(parts, fontSize){
 
 function renderSyllableWord(word, el, fontSize){
   if(!word){ el.textContent=''; return; }
+  // If the entry is a phrase (contains spaces), colour each word independently
+  if(word.includes(' ')){
+    const fs = fontSize ? `font-size:${fontSize};` : '';
+    el.innerHTML = word.split(' ').map((token, ti) => {
+      if(!token) return ' ';
+      const parts = getSyllables(token);
+      const coloured = parts.length > 1 ? syllableHTML(parts, fontSize) :
+        `<span style="${fs}color:${SYLLABLE_COLORS[0]};font-weight:700">${token}</span>`;
+      return (ti > 0 ? ' ' : '') + coloured;
+    }).join('');
+    return;
+  }
   const parts = getSyllables(word);
   if(parts.length <= 1){ el.textContent = word; return; }
   el.innerHTML = syllableHTML(parts, fontSize);
