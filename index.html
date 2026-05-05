@@ -1338,6 +1338,10 @@ function splitSyllables(word){
     'everything':'ev-ery-thing','somewhere':'some-where','anywhere':'any-where',
     'everywhere':'ev-ery-where','every':'ev-ery',
     'biography':'bi-og-ra-phy','biographies':'bi-og-ra-phies',
+    'revolutionary':'rev-o-lu-tion-ar-y','revolution':'rev-o-lu-tion',
+    'evolutionary':'ev-o-lu-tion-ar-y','evolution':'ev-o-lu-tion',
+    'congratulations':'con-grat-u-la-tions','constitution':'con-sti-tu-tion',
+    'institutional':'in-sti-tu-tion-al','revolutionary':'rev-o-lu-tion-ar-y',
     'thoughtful':'thought-ful','thoughtfully':'thought-ful-ly',
     'empire':'em-pire','merchant':'mer-chant','exchange':'ex-change',
     'champion':'cham-pi-on','kingdom':'king-dom','freedom':'free-dom',
@@ -1421,7 +1425,9 @@ function splitSyllables(word){
   // Groups indivisible letter clusters so the splitter never cuts inside them.
   // Priority (longest first): vowel clusters → consonant clusters → diphthongs → single chars
   const DIPH    = ['au','aw','ai','ay','ea','ee','ei','eu','ew','ey','ie','oa','oe','oi','oo','ou','ow','oy','ue','ui'];
-  const VCL     = ['ough','augh','eigh','igh'];                 // vowel clusters (single nucleus)
+  // Vowel clusters that form a single nucleus (treated as one vowel token)
+  // Includes -tion/-sion/-cian which are always one syllable /ʃən/
+  const VCL     = ['tion','sion','cian','ough','augh','eigh','igh'];
   const CCL     = ['tch','dge','ck','ch','sh','th','ph','wh','gh','ng','nk','qu','gn','wr','kn']
                     .sort((a,b) => b.length - a.length);        // consonant clusters (single token)
   // Clusters that can NEVER start a syllable (always stay with the preceding vowel)
@@ -1509,12 +1515,15 @@ function colorSyllableSpans(container){
     const raw = sp.dataset.word;
     if(!raw) return;
     if(raw.includes(' ')){
-      // Phrase: colour each word token independently, preserve spaces
+      let colorIdx = 0;
       sp.innerHTML = raw.split(' ').map((token, ti) => {
         if(!token) return ' ';
         const parts = getSyllables(token);
-        const coloured = parts.length > 1 ? syllableHTML(parts,'14px') :
-          `<span style="font-size:14px;color:${SYLLABLE_COLORS[0]};font-weight:700">${token}</span>`;
+        const coloured = parts.map(s => {
+          const c = SYLLABLE_COLORS[colorIdx % SYLLABLE_COLORS.length];
+          colorIdx++;
+          return `<span style="font-size:14px;color:${c};font-weight:700">${s}</span>`;
+        }).join('');
         return (ti > 0 ? ' ' : '') + coloured;
       }).join('');
     } else {
@@ -1534,13 +1543,19 @@ function syllableHTML(parts, fontSize){
 function renderSyllableWord(word, el, fontSize){
   if(!word){ el.textContent=''; return; }
   // If the entry is a phrase (contains spaces), colour each word independently
+  // but use a continuous colour index across the whole phrase so each syllable
+  // (including single-syllable words) gets a distinct colour.
   if(word.includes(' ')){
     const fs = fontSize ? `font-size:${fontSize};` : '';
+    let colorIdx = 0;
     el.innerHTML = word.split(' ').map((token, ti) => {
       if(!token) return ' ';
       const parts = getSyllables(token);
-      const coloured = parts.length > 1 ? syllableHTML(parts, fontSize) :
-        `<span style="${fs}color:${SYLLABLE_COLORS[0]};font-weight:700">${token}</span>`;
+      const coloured = parts.map(s => {
+        const c = SYLLABLE_COLORS[colorIdx % SYLLABLE_COLORS.length];
+        colorIdx++;
+        return `<span style="${fs}color:${c};font-weight:700">${s}</span>`;
+      }).join('');
       return (ti > 0 ? ' ' : '') + coloured;
     }).join('');
     return;
