@@ -859,57 +859,34 @@ function parseGrammarText(text){
     const difficulty = diffMat ? diffMat[1].trim() : '中';
     
     // Extract question+options from END of chunkBefore
+    // Find lines that contain question markers or option patterns
     const lines = chunkBefore.split('\n').map(l=>l.trim()).filter(l=>l);
-
-    // Walk backwards: find the options line first (contains （Ａ）etc.)
-    // then find the question line (may be the same line, the line before, or marked with (   ))
-    let optLine = '', qLine = '';
+    
+    // Find the last block that looks like a question (contains （ ） or ( ) marker, OR contains options)
+    // Walk backwards from end to find options line and question line
+    let optLine = '', qLines = [];
     for(let j = lines.length-1; j >= 0; j--){
       const l = lines[j];
-      // Options line: contains （Ａ） or (A) style options
-      if(!optLine && /[（(][ＡＢＣＤABCDａｂｃｄabcd][）)]/.test(l)){
-        optLine = l;
-
-        // Case 1: same line has question marker (   ) before first option
-        // e.g. "- (   ) 題目文字 （Ａ）..."
-        const sameLineQ = l.replace(/^[-－•]\s*/,'');
-        const qMarkerMatch = sameLineQ.match(/^[（(][\s　]*[）)]\s*([\s\S]+?)(?=[（(][ＡＢＣＤABCDａｂｃｄabcd][）)])/);
-        if(qMarkerMatch){
-          qLine = qMarkerMatch[1].trim();
-          break;
-        }
-
-        // Case 2: question text is on the previous non-empty line(s)
-        // collect lines upward until we hit a question marker line or preamble
-        const qParts = [];
-        for(let k = j-1; k >= 0; k--){
-          const prev = lines[k];
-          if(!prev) continue;
-          if(/^(解析|難易度|\[|\])/.test(prev)) break;
-          // If this line itself is the question marker line
-          const markerMatch = prev.match(/[-－•]?\s*[（(][\s　]*[）)]\s*([\s\S]*)/);
-          if(markerMatch){
-            const afterMarker = markerMatch[1].trim();
-            if(afterMarker) qParts.unshift(afterMarker);
-            break;
-          }
-          // Otherwise it's part of the question text (e.g. continuation)
-          qParts.unshift(prev);
-          // If this line doesn't end mid-sentence stop here (single-line question)
-          if(!/[　\s]$/.test(prev)) break;
-        }
-        if(qParts.length) qLine = qParts.join(' ').trim();
+      if(/[（(][ＡＢＣＤABCDａｂｃｄabcd][）)]/.test(l) && !optLine){
+        optLine = l; // this line has options
+      } else if(optLine && /[（(][\s　]*[）)]/.test(l)){
+        qLines.unshift(l.replace(/^[-－]\s*[（(][\s　]*[）)]\s*/,'').trim());
         break;
+      } else if(optLine && l && !/^(解析|難易度|\[)/.test(l)){
+        // This might be part of question text
+        qLines.unshift(l);
       }
     }
-
+    
+    // If we didn't find separate qLine, the question might be in the same line as options
+    let qLine = qLines.join(' ').trim();
     if(!qLine && optLine){
-      // Last resort: strip the (   ) marker from optLine prefix
-      const beforeFirst = optLine.replace(/^[-－•]?\s*[（(][\s　]*[）)]\s*/,'');
+      // Try to extract question from beginning of optLine before first option
+      const beforeFirst = optLine.replace(/^[-－]?\s*[（(][\s　]*[）)]\s*/,'');
       const firstOptIdx = beforeFirst.search(/[（(][ＡAａa][）)]/);
       if(firstOptIdx > 0) qLine = beforeFirst.slice(0, firstOptIdx).trim();
     }
-
+    
     if(!qLine || !optLine) continue;
     
     // Parse options
@@ -973,35 +950,8 @@ window.importGrammarDocx = async function(input){
   try{
     const arrayBuffer = await file.arrayBuffer();
     if(typeof mammoth === 'undefined'){ msg.style.color='var(--danger)'; msg.textContent='無法載入 docx 解析器，請改用貼上文字方式'; return; }
-    // Use mammoth with a transform to detect underlined whitespace (fill-in-the-blank blanks)
-    const transformElement = (el) => {
-      // underlined runs whose text is all whitespace/ideographic spaces → replace with ______
-      if (el.type === 'run' && el.styleId !== undefined) return el;
-      return el;
-    };
-    const result = await mammoth.convertToHtml({arrayBuffer}, {
-      styleMap: ["u => u"]
-    });
-    const div = document.createElement('div');
-    div.innerHTML = result.value;
-    // <u> that contains only whitespace/ideographic spaces = fill-in-the-blank
-    div.querySelectorAll('u').forEach(u => {
-      const txt = u.textContent;
-      const isBlank = /^[\s\u3000\u00a0]+$/.test(txt) || txt.trim() === '';
-      if (isBlank) {
-        // count ideographic spaces as blank slots (each 　 = 1 char)
-        const slots = txt.replace(/[^\u3000]/g, '').length || Math.max(3, Math.round(txt.length / 1.5));
-        u.replaceWith('_'.repeat(Math.max(6, slots * 2)));
-      } else {
-        // underlined real text → keep as-is (e.g. proper nouns)
-        u.replaceWith(txt);
-      }
-    });
-    div.querySelectorAll('strong,b,em,i').forEach(el => el.replaceWith(el.textContent));
-    div.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
-    div.querySelectorAll('p,li,div').forEach(el => el.insertAdjacentText('afterend','\n'));
-    let plainText = div.textContent.replace(/\n{3,}/g,'\n\n').trim();
-    document.getElementById('grammar-import-text').value = plainText;
+    const result = await mammoth.extractRawText({arrayBuffer});
+    document.getElementById('grammar-import-text').value = result.value;
     msg.style.color='var(--success)'; msg.textContent='✓ 已讀取 docx，請確認後點「解析並匯入」';
   }catch(e){ msg.style.color='var(--danger)'; msg.textContent='讀取失敗：'+e.message; }
 };
@@ -1176,125 +1126,54 @@ const SYLLABLE_COLORS = ['#2563eb','#d97706','#16a34a','#9333ea','#dc2626','#089
 const syllableCache = {}; // { word: ['syl','la','ble'] } — session cache
 
 // Local syllable splitter based on standard English phonological rules
-// Architecture:
-//   1. Exception dictionary (irregular / morphology-based words)
-//   2. Suffix stripping  (-ing, -ed, -er, -est, -ful, -less, -ness, -ly)
-//   3. Prefix stripping  (un-, re-, pre-, dis-, over-, …)
-//   4. Tokenize core     (groups digraphs / vowel-clusters into indivisible tokens)
-//   5. Split token stream (V-CV open-syllable default; VC-CV for non-onset clusters)
-//   6. Reassemble with original casing
+// Handles: consonant clusters, digraphs, silent-e, vowel pairs, prefixes/suffixes
 function splitSyllables(word){
   const w = word.toLowerCase().trim();
   if(!w || w.length <= 2) return [word];
 
-  const VOWELS = new Set([...'aeiouy']);
-  const TD     = new Set(['t','d']); // -ed after t/d forms its own syllable /ɪd/
-
-  // ── Exception dictionary ───────────────────────────────────────
-  // Single-syllable entries (value === key) are listed to prevent the
-  // algorithm from incorrectly splitting them.
   const EX = {
-    // Single-syllable -ed forms (voiceless consonant → /t/, not a new syllable)
-    'jumped':'jumped','walked':'walked','talked':'talked','helped':'helped',
-    'stopped':'stopped','dropped':'dropped','shipped':'shipped','clapped':'clapped',
-    'stepped':'stepped','wrapped':'wrapped','kissed':'kissed','missed':'missed',
-    'passed':'passed','fixed':'fixed','asked':'asked','worked':'worked',
-    'parked':'parked','cooked':'cooked','looked':'looked','booked':'booked',
-    'pushed':'pushed','flushed':'flushed','watched':'watched','matched':'matched',
-    'reached':'reached','touched':'touched','launched':'launched',
-    'laughed':'laughed','coughed':'coughed',
-    // Single-syllable irregulars
     'through':'through','though':'though','thought':'thought','brought':'brought',
-    'bought':'bought','fought':'fought','sought':'sought','caught':'caught',
-    'taught':'taught','straight':'straight','strength':'strength','friend':'friend',
-    'clothes':'clothes','rhythm':'rhythm','laugh':'laugh','rough':'rough',
-    'tough':'tough','enough':'enough','cough':'cough','bread':'bread',
-    'health':'health','wealth':'wealth','breath':'breath','death':'death',
-    'earth':'earth','heard':'heard','learn':'learn','world':'world','worth':'worth',
-    'build':'build','built':'built','bright':'bright','flight':'flight',
-    'fright':'fright','knight':'knight','light':'light','might':'might',
-    'night':'night','right':'right','sight':'sight','tight':'tight','slight':'slight',
-    // ph-based words (morphological splits)
-    'graphic':'graph-ic','graphics':'graph-ics',
-    'prophet':'proph-et','dolphin':'dol-phin','dolphins':'dol-phins',
-    'orphan':'or-phan','orphans':'or-phans','triumph':'tri-umph',
-    // th-based words
-    'therefore':'there-fore','whether':'wheth-er',
-    'together':'to-geth-er','another':'an-oth-er',
-    'something':'some-thing','anything':'an-y-thing',
-    'everything':'ev-ery-thing','nothing':'noth-ing',
-    'although':'al-though','throughout':'through-out',
-    'withdraw':'with-draw','within':'with-in','worthwhile':'worth-while',
-    // ph words needing open-syllable treatment
-    'telephone':'tel-e-phone','telephones':'tel-e-phones',
-    'elephant':'el-e-phant','elephants':'el-e-phants',
-    'photograph':'pho-to-graph','photographs':'pho-to-graphs',
-    'photography':'pho-tog-ra-phy','photographer':'pho-tog-ra-pher',
-    'atmosphere':'at-mos-phere',
-    'alphabet':'al-pha-bet','alphabets':'al-pha-bets',
-    'trophy':'tro-phy','trophies':'tro-phies',
-    // Closed-syllable words (algorithm defaults to open; listed here to override)
-    'camel':'cam-el','travel':'trav-el','novel':'nov-el',
-    'panel':'pan-el','model':'mod-el','level':'lev-el',
-    'gravel':'grav-el','channel':'chan-nel','tunnel':'tun-nel',
-    'rebel':'reb-el','cancel':'can-cel','parcel':'par-cel',
-    'vessel':'ves-sel','fossil':'fos-sil',
-    'river':'riv-er','liver':'liv-er','cover':'cov-er',
-    'never':'nev-er','seven':'sev-en',
-    'even':'e-ven','over':'o-ver','open':'o-pen',
-    'driven':'driv-en','given':'giv-en','risen':'ris-en',
-    'frozen':'fro-zen','broken':'bro-ken','token':'to-ken',
-    'chosen':'cho-sen','stolen':'sto-len',
-    // -le words
-    'table':'ta-ble','cable':'ca-ble','able':'a-ble','fable':'fa-ble',
-    'stable':'sta-ble','maple':'ma-ple','simple':'sim-ple',
-    'sample':'sam-ple','ample':'am-ple','purple':'pur-ple',
-    'circle':'cir-cle','uncle':'un-cle','jungle':'jun-gle',
-    'handle':'han-dle','candle':'can-dle','gentle':'gen-tle',
-    'little':'lit-tle','bottle':'bot-tle','battle':'bat-tle',
-    'settle':'set-tle','middle':'mid-dle','riddle':'rid-dle',
-    'puzzle':'puz-zle','people':'peo-ple','apple':'ap-ple',
-    'giggle':'gig-gle','wiggle':'wig-gle','struggle':'strug-gle',
-    'trouble':'trou-ble','double':'dou-ble','couple':'cou-ple','noble':'no-ble',
-    'cattle':'cat-tle','dazzle':'daz-zle','leisure':'lei-sure',
-    'treasure':'trea-sure','pleasure':'plea-sure',
-    // Misc multi-syllable
-    'children':'chil-dren','hundred':'hun-dred',
-    'describe':'de-scribe','describes':'de-scribes',
-    'complete':'com-plete','completes':'com-pletes','completely':'com-plete-ly',
-    'monster':'mon-ster','monsters':'mon-sters',
-    'blanket':'blan-ket','blankets':'blan-kets',
-    'water':'wa-ter','paper':'pa-per','number':'num-ber',
-    'center':'cen-ter','winter':'win-ter','summer':'sum-mer',
-    'butter':'but-ter','better':'bet-ter','letter':'let-ter',
-    'matter':'mat-ter','pattern':'pat-tern','happen':'hap-pen',
-    'chicken':'chick-en','kitchen':'kitch-en','often':'of-ten',
-    'listen':'lis-ten','button':'but-ton','cotton':'cot-ton',
-    'kitten':'kit-ten','sudden':'sud-den','hidden':'hid-den',
-    'modern':'mod-ern','system':'sys-tem','special':'spe-cial',
-    'science':'sci-ence','machine':'ma-chine','country':'coun-try',
+    'friend':'friend','straight':'straight','clothes':'clothes','rhythm':'rhythm',
+    'strength':'strength','laugh':'laugh','bread':'bread','health':'health',
+    'wealth':'wealth','breath':'breath','death':'death','rough':'rough',
+    'tough':'tough','enough':'enough','cough':'cough',
+    'water':'wa-ter','paper':'pa-per','over':'o-ver','open':'o-pen','even':'e-ven',
+    'river':'riv-er','never':'nev-er','seven':'sev-en','human':'hu-man',
+    'sister':'sis-ter','tiger':'ti-ger','spider':'spi-der','garden':'gar-den',
+    'winter':'win-ter','summer':'sum-mer','butter':'but-ter','better':'bet-ter',
+    'letter':'let-ter','matter':'mat-ter','pattern':'pat-tern','happen':'hap-pen',
+    'chicken':'chick-en','kitchen':'kitch-en','often':'of-ten','listen':'lis-ten',
+    'button':'but-ton','cotton':'cot-ton','kitten':'kit-ten','sudden':'sud-den',
+    'hidden':'hid-den','modern':'mod-ern','system':'sys-tem','special':'spe-cial',
+    'people':'peo-ple','science':'sci-ence','machine':'ma-chine','country':'coun-try',
     'money':'mon-ey','honey':'hon-ey','monkey':'mon-key','turkey':'tur-key',
     'journey':'jour-ney','weather':'weath-er','teacher':'teach-er',
     'mother':'moth-er','father':'fa-ther','brother':'broth-er','enter':'en-ter',
-    'nature':'na-ture','future':'fu-ture','culture':'cul-ture',
-    'picture':'pic-ture','mixture':'mix-ture','texture':'tex-ture',
-    'measure':'mea-sure','measures':'mea-sures','measured':'mea-sured',
-    'measurement':'mea-sure-ment','measurements':'mea-sure-ments',
+    'table':'ta-ble','cable':'ca-ble','stable':'sta-ble','maple':'ma-ple',
+    'fable':'fa-ble','able':'a-ble','apple':'ap-ple','simple':'sim-ple',
+    'purple':'pur-ple','circle':'cir-cle','uncle':'un-cle','jungle':'jun-gle',
+    'handle':'han-dle','candle':'can-dle','gentle':'gen-tle','little':'lit-tle',
+    'bottle':'bot-tle','cattle':'cat-tle','battle':'bat-tle','settle':'set-tle',
+    'middle':'mid-dle','riddle':'rid-dle','puzzle':'puz-zle','dazzle':'daz-zle',
+    'nature':'na-ture','future':'fu-ture','culture':'cul-ture','picture':'pic-ture',
+    'mixture':'mix-ture','texture':'tex-ture','measure':'meas-ure',
+    'treasure':'treas-ure','pleasure':'pleas-ure','leisure':'lei-sure',
     'mountain':'moun-tain','captain':'cap-tain','certain':'cer-tain',
     'curtain':'cur-tain','fountain':'foun-tain','lantern':'lan-tern',
+    'number':'num-ber','center':'cen-ter','hundred':'hun-dred',
     'student':'stu-dent','problem':'prob-lem','program':'pro-gram',
     'station':'sta-tion','nation':'na-tion','action':'ac-tion','ocean':'o-cean',
     'lesson':'les-son','season':'sea-son','reason':'rea-son','person':'per-son',
     'vision':'vi-sion','fashion':'fash-ion','passion':'pas-sion','mission':'mis-sion',
     'begin':'be-gin','belong':'be-long','beyond':'be-yond','behind':'be-hind',
     'below':'be-low','beside':'be-side','because':'be-cause','create':'cre-ate',
-    'ancient':'an-cient','harvest':'har-vest','prosper':'pros-per',
-    'master':'mas-ter','faster':'fast-er','basket':'bas-ket','market':'mar-ket',
-    'pocket':'pock-et','rocket':'rock-et','ticket':'tick-et','jacket':'jack-et',
-    'racket':'rack-et','insect':'in-sect','object':'ob-ject','subject':'sub-ject',
-    'project':'pro-ject','protect':'pro-tect','perfect':'per-fect',
-    'collect':'col-lect','connect':'con-nect','correct':'cor-rect',
-    'select':'se-lect','expect':'ex-pect','respect':'re-spect',
+    'ancient':'an-cient',
+    'harvest':'har-vest','prosper':'pros-per','master':'mas-ter','faster':'fast-er',
+    'basket':'bas-ket','blanket':'blan-ket','market':'mar-ket','pocket':'pock-et',
+    'rocket':'rock-et','ticket':'tick-et','jacket':'jack-et','racket':'rack-et',
+    'insect':'in-sect','object':'ob-ject','subject':'sub-ject','project':'pro-ject',
+    'protect':'pro-tect','perfect':'per-fect','collect':'col-lect','connect':'con-nect',
+    'correct':'cor-rect','select':'se-lect','expect':'ex-pect','respect':'re-spect',
     'inspect':'in-spect','district':'dis-trict','instinct':'in-stinct',
     'distinct':'dis-tinct','extinct':'ex-tinct','contract':'con-tract',
     'contrast':'con-trast','construct':'con-struct','abstract':'ab-stract',
@@ -1303,8 +1182,8 @@ function splitSyllables(word){
     'consist':'con-sist','congress':'con-gress','concept':'con-cept',
     'concern':'con-cern','confirm':'con-firm','conflict':'con-flict',
     'conquer':'con-quer','consent':'con-sent','consider':'con-sid-er',
-    'contact':'con-tact','contain':'con-tain','continue':'con-tin-ue',
-    'contribute':'con-trib-ute','convince':'con-vince',
+    'consist':'con-sist','contact':'con-tact','contain':'con-tain',
+    'continue':'con-tin-ue','contribute':'con-trib-ute','convince':'con-vince',
     'instant':'in-stant','instance':'in-stance','instead':'in-stead',
     'install':'in-stall','inspire':'in-spire','express':'ex-press',
     'explore':'ex-plore','explain':'ex-plain','extreme':'ex-treme',
@@ -1316,9 +1195,10 @@ function splitSyllables(word){
     'general':'gen-er-al','camera':'cam-er-a','memory':'mem-o-ry',
     'energy':'en-er-gy','history':'his-to-ry','library':'li-brar-y',
     'mystery':'mys-ter-y','victory':'vic-to-ry','battery':'bat-ter-y',
-    'computer':'com-pu-ter','tomorrow':'to-mor-row','umbrella':'um-brel-la',
-    'remember':'re-mem-ber','important':'im-por-tant','adventure':'ad-ven-ture',
-    'fantastic':'fan-tas-tic','example':'ex-am-ple','hospital':'hos-pi-tal',
+    'together':'to-geth-er','another':'an-oth-er','computer':'com-pu-ter',
+    'tomorrow':'to-mor-row','umbrella':'um-brel-la','remember':'re-mem-ber',
+    'important':'im-por-tant','adventure':'ad-ven-ture','fantastic':'fan-tas-tic',
+    'example':'ex-am-ple','complete':'com-plete','hospital':'hos-pi-tal',
     'beautiful':'beau-ti-ful','chocolate':'choc-o-late','restaurant':'res-tau-rant',
     'vegetable':'veg-e-ta-ble','comfortable':'com-for-ta-ble',
     'interesting':'in-ter-est-ing','different':'dif-fer-ent',
@@ -1338,215 +1218,78 @@ function splitSyllables(word){
     'particular':'par-tic-u-lar','familiar':'fa-mil-iar',
     'classmate':'class-mate','homework':'home-work','birthday':'birth-day',
     'everything':'ev-ery-thing','somewhere':'some-where','anywhere':'any-where',
-    'everywhere':'ev-ery-where','every':'ev-ery',
-    'optional':'op-tion-al','options':'op-tions','option':'op-tion',
-    'expansion':'ex-pan-sion','expansions':'ex-pan-sions',
-    'partial':'par-tial','partially':'par-tial-ly',
-    'special':'spe-cial','especially':'es-pe-cial-ly',
-    'official':'of-fi-cial','officially':'of-fi-cial-ly',
-    'financial':'fi-nan-cial','financially':'fi-nan-cial-ly',
-    'social':'so-cial','socially':'so-cial-ly',
-    'crucial':'cru-cial','crucial':'cru-cial',
-    'initial':'i-ni-tial','initially':'i-ni-tial-ly',
-    'potential':'po-ten-tial','potentially':'po-ten-tial-ly',
-    'essential':'es-sen-tial','essentially':'es-sen-tial-ly',
-    'commercial':'com-mer-cial','artificial':'ar-ti-fi-cial',
-    'apron':'a-pron','aprons':'a-prons',
-    'rental':'ren-tal','rentals':'ren-tals',
-    'mental':'men-tal','dental':'den-tal','central':'cen-tral',
-    'achievement':'a-chieve-ment','achievements':'a-chieve-ments',
-    'advertisement':'ad-ver-tise-ment',
-    'reading':'read-ing','writing':'writ-ing','speaking':'speak-ing',
-    'listening':'lis-ten-ing','learning':'learn-ing',
-    'biography':'bi-og-ra-phy','biographies':'bi-og-ra-phies',
-    'revolutionary':'re-vo-lu-tion-ar-y','revolution':'re-vo-lu-tion',
-    'evolutionary':'e-vo-lu-tion-ar-y','evolution':'e-vo-lu-tion',
-    'congratulations':'con-grat-u-la-tions','constitution':'con-sti-tu-tion',
-    'institutional':'in-sti-tu-tion-al',
-    'thoughtful':'thought-ful','thoughtfully':'thought-ful-ly',
-    'empire':'em-pire','merchant':'mer-chant','exchange':'ex-change',
-    'champion':'cham-pi-on','kingdom':'king-dom','freedom':'free-dom',
-    'wisdom':'wis-dom','seldom':'sel-dom','mango':'man-go',
-    'pencil':'pen-cil','spider':'spi-der','garden':'gar-den',
-    'sister':'sis-ter','tiger':'ti-ger','hotel':'ho-tel',
-    'fever':'fe-ver','bacon':'ba-con','robot':'ro-bot',
-    'label':'la-bel','moment':'mo-ment','angel':'an-gel',
-    'under':'un-der','enter':'en-ter','after':'af-ter',
-    'super':'su-per','local':'lo-cal','total':'to-tal',
-    'final':'fi-nal','metal':'met-al','petal':'pet-al',
-    'medal':'med-al','pedal':'ped-al','human':'hu-man',
+    'every':'ev-ery',
   };
 
   if(EX[w]){
     const parts = EX[w].split('-');
     if(word[0] !== word[0].toLowerCase()) parts[0] = parts[0][0].toUpperCase() + parts[0].slice(1);
-    // single-syllable entries return unchanged word
-    if(parts.length === 1) return [word];
     return parts;
   }
 
-  // ── Suffix stripping ───────────────────────────────────────────
-  // Strip common inflectional/derivational suffixes BEFORE splitting the core,
-  // so that "running" → core "run" + suffix "ning", "fastest" → "fast" + "est".
-  // Suffixes are only stripped when the remaining stem is a plausible word
-  // (length ≥ 2, contains a vowel).
-  let suffix = null, stemW = w, origStemLen = w.length, dedupExtra = '';
+  const VOWELS_SET = new Set([...'aeiouy']);
+  const DIPHTHONGS = new Set(['ai','ay','ea','ee','ei','eu','ew','ey','ie','oa','oe','oi','oo','ou','ow','oy','ue','ui']);
+  const DIGRAPHS   = ['ch','sh','th','wh','ph','gh','ck','ng','qu'];
+  // Onset clusters: these start a syllable (keep together with next vowel)
+  const ONSET_CL   = ['bl','br','cl','cr','dr','fl','fr','gl','gr','pl','pr','sc','sk','sl','sm','sn','sp','st','sw','tr','tw','wr','str','spr','spl','scr'];
 
-  if(w.endsWith('ing') && w.length > 4){
-    const s = w.slice(0,-3);
-    // Handle consonant-doubling (run+n+ing): dedup last letter if doubled consonant
-    const isDedup = s.length >= 2 && !VOWELS.has(s[s.length-1]) && s[s.length-1] === s[s.length-2];
-    const dd = isDedup ? s.slice(0,-1) : s;
-    if(dd.length >= 2 && [...dd].some(c => VOWELS.has(c))){
-      suffix = 'ing'; stemW = dd; origStemLen = w.length - 3;
-      if(isDedup) dedupExtra = s[s.length-1]; // doubled letter belongs to suffix side: run-NING
-    }
-  } else if(w.endsWith('ed') && w.length > 3){
-    const s = w.slice(0,-2);
-    // -ed only forms its own syllable when stem ends in t or d (painted, clouded)
-    if(TD.has(s[s.length-1]) && s.length >= 2 && [...s].some(c => VOWELS.has(c))){
-      suffix = 'ed'; stemW = s; origStemLen = w.length - 2;
-    }
-    // Otherwise (jumped, walked) leave the word whole — protected by the EX dictionary
-  } else if(w.endsWith('er') && w.length > 3){
-    const s = w.slice(0,-2);
-    if(!VOWELS.has(s[s.length-1]) && s.length >= 2 && [...s].some(c => VOWELS.has(c))){
-      suffix = 'er'; stemW = s; origStemLen = w.length - 2;
-    }
-  } else if(w.endsWith('est') && w.length > 4){
-    const s = w.slice(0,-3);
-    // Only strip -est when stem ends in consonant AND stem is ≥ 4 chars
-    // (avoids mis-stripping "protest" → "prot")
-    if(!VOWELS.has(s[s.length-1]) && s.length >= 4 && [...s].some(c => VOWELS.has(c))){
-      suffix = 'est'; stemW = s; origStemLen = w.length - 3;
-    }
-  } else {
-    // -ment: strip regardless of stem's final char (measure+ment, manage+ment end in vowel)
-    if(w.endsWith('ment') && w.length > 5){
-      const s = w.slice(0,-4);
-      if(s.length >= 2 && [...s].some(c => VOWELS.has(c))){ suffix = 'ment'; stemW = s; origStemLen = w.length - 4; }
-    } else {
-      for(const sf of ['ness','less','ful','ly']){
-        if(w.endsWith(sf) && w.length > sf.length + 1){
-          const s = w.slice(0,-sf.length);
-          if([...s].some(c => VOWELS.has(c))){ suffix = sf; stemW = s; origStemLen = w.length - sf.length; break; }
+  // Silent-e rule: C+e ending, only 2 vowel letters total = 1 syllable
+  const vowelChars = [...w].filter(c => VOWELS_SET.has(c));
+  if(w.endsWith('e') && !VOWELS_SET.has(w[w.length-2]) && vowelChars.length <= 2){
+    return [word];
+  }
+
+  function splitCore(s){
+    if(s.length <= 3) return [s];
+    const res = []; let i = 0, cur = '';
+    while(i < s.length){
+      cur += s[i];
+      if(VOWELS_SET.has(s[i]) && i + 1 < s.length){
+        let j = i + 1, cons = '';
+        while(j < s.length && !VOWELS_SET.has(s[j])){ cons += s[j]; j++; }
+        const hasNextVowel = j < s.length;
+        if(hasNextVowel){
+          if(cons.length === 0){
+            // VV: split unless diphthong
+            if(!DIPHTHONGS.has(s[i] + s[i+1])){ res.push(cur); cur = ''; }
+          } else if(cons.length === 1){
+            // V-CV: single consonant goes with next syllable
+            res.push(cur); cur = '';
+          } else {
+            // VCC+V: find best split point
+            // Strategy: find longest onset cluster or digraph that can start the next syllable,
+            // split just before it.
+            let splitAfter = 1; // default: split after first consonant (VC-CV)
+            // Check if cons[1..] starts with an onset cluster → split before it
+            for(const cl of ONSET_CL.sort((a,b)=>b.length-a.length)){
+              if(cons.slice(1).startsWith(cl)){
+                splitAfter = 1; break;
+              }
+            }
+            // Check if cons starts with a digraph → digraph belongs to LEFT syllable
+            const startsDigraph = DIGRAPHS.some(d => cons.startsWith(d));
+            if(startsDigraph && cons.length === 2){
+              // e.g. "with-draw": digraph+single = keep digraph left
+              cur += cons[0] + cons[1]; res.push(cur); cur = ''; i += cons.length - 1;
+            } else if(startsDigraph){
+              cur += cons[0]; res.push(cur); cur = ''; i += 1;
+            } else {
+              // Standard VC-CV: split after splitAfter consonants
+              cur += cons.slice(0, splitAfter); res.push(cur); cur = ''; i += cons.length - 1;
+            }
+          }
         }
       }
+      i++;
     }
+    if(cur) res.push(cur);
+    return res.filter(x => x.length > 0);
   }
 
-  // ── Prefix stripping ───────────────────────────────────────────
-  // Strip common prefixes from the (already suffix-stripped) stem.
-  // The remainder (rest) must form a plausible syllable onset:
-  //   • starts with a vowel, OR
-  //   • starts with consonant + vowel (CV), OR
-  //   • starts with a valid onset cluster (blend: pl, tr, str…)
-  // This prevents false splits like rental → re+ntal.
-  const ONSET_PFX = new Set(['bl','br','cl','cr','dr','fl','fr','gl','gr','pl','pr',
-                              'sc','sk','sl','sm','sn','sp','st','sw','tr','tw',
-                              'ch','sh','th','wh','ph','str','spr','spl','scr']);
-  function validRest(r){
-    if(r.length < 3 || ![...r].some(c => VOWELS.has(c))) return false;
-    if(VOWELS.has(r[0])) return true;           // vowel-initial
-    if(r.length >= 2 && VOWELS.has(r[1])) return true;  // CV
-    if(r.length >= 2 && ONSET_PFX.has(r[0]+r[1])) return true; // blend
-    if(r.length >= 3 && ONSET_PFX.has(r[0]+r[1]+r[2])) return true; // 3-char onset
-    return false;
-  }
-  const PREFIXES = ['over','under','pre','dis','mis','out','un','re','be','de','en','em','ex','in','im','pro']
-                     .sort((a,b) => b.length - a.length);
-  let prefix = null, coreW = stemW, origPfxLen = 0;
-  for(const pf of PREFIXES){
-    if(stemW.startsWith(pf) && stemW.length > pf.length + 1){
-      const rest = stemW.slice(pf.length);
-      if(validRest(rest)){
-        prefix = pf; coreW = rest; origPfxLen = pf.length; break;
-      }
-    }
-  }
-
-  // ── Tokenizer ──────────────────────────────────────────────────
-  // Groups indivisible letter clusters so the splitter never cuts inside them.
-  // Priority (longest first): vowel clusters → consonant clusters → diphthongs → single chars
-  const DIPH    = ['au','aw','ai','ay','ea','ee','ei','eu','ew','ey','ie','oa','oe','oi','oo','ou','ow','oy','ue','ui'];
-  // Vowel clusters that form a single nucleus (treated as one vowel token)
-  // Includes -tion/-sion/-cian/-tial/-cial which are always one syllable /ʃən/ or /ʃəl/
-  const VCL     = ['tion','sion','tial','cial','cian','ough','augh','eigh','igh'];
-  const CCL     = ['tch','dge','ck','ch','sh','th','ph','wh','gh','ng','nk','qu','gn','wr','kn']
-                    .sort((a,b) => b.length - a.length);        // consonant clusters (single token)
-  // Clusters that can NEVER start a syllable (always stay with the preceding vowel)
-  const NON_ONSET = new Set(['ck','ng','nk','gh','tch','dge','gn','kn']);
-  // Valid syllable onsets (consonant combinations that CAN start a syllable)
-  const V_ONSET = new Set(['str','spr','spl','scr','shr','thr','bl','br','cl','cr','dr','fl','fr','gl','gr','pl','pr','sc','sk','sl','sm','sn','sp','st','sw','tr','tw','ch','sh','th','wh','ph']);
-  function isOnset(s){ return V_ONSET.has(s) || (s.length === 1 && !VOWELS.has(s)); }
-
-  // Helper: split a core string into syllable parts (used for both the main word and recursion)
-  function coreSplit(s){
-    if(EX[s]){ const p = EX[s].split('-'); return p.join('') === s && p.length === 1 ? [s] : p; }
-    if(!s || s.length <= 2) return [s];
-    function tok(x){
-      const r = []; let i = 0;
-      while(i < x.length){
-        let m = false;
-        for(const v of VCL){ if(x.startsWith(v,i)){ r.push({s:v,t:'v'}); i+=v.length; m=true; break; } }
-        if(m) continue;
-        for(const c of CCL){ if(x.startsWith(c,i)){ r.push({s:c,t:'c'}); i+=c.length; m=true; break; } }
-        if(m) continue;
-        if(VOWELS.has(x[i]) && i+1 < x.length && DIPH.includes(x[i]+x[i+1])){
-        r.push({s:x[i]+x[i+1], t:'v'}); i+=2;
-        } else {
-          r.push({s:x[i], t: VOWELS.has(x[i]) ? 'v' : 'c'}); i++;
-        }
-      }
-      return r;
-    }
-    const T = tok(s), N = T.length;
-    const vp = T.map((t,i) => t.t==='v' ? i : -1).filter(x => x >= 0);
-    if(vp.length <= 1) return [s];
-    const drop = N>=2 && T[N-1].s==='e' && T[N-1].t==='v' && T[N-2].t==='c' && vp.length>=2;
-    const av = drop ? vp.slice(0,-1) : vp;
-    if(av.length <= 1) return [s];
-    const cuts = new Set();
-    for(let vi = 0; vi < av.length - 1; vi++){
-      const vA = av[vi], vB = av[vi+1], bt = T.slice(vA+1,vB), C = bt.length;
-      if(C === 0){ cuts.add(vB); }
-      else if(C === 1){
-        if(NON_ONSET.has(bt[0].s)) cuts.add(vA+2); else cuts.add(vA+1);
-      } else {
-        // Find the LONGEST valid onset that can start the next syllable.
-        // Iterate from take=1 (fewest left, most right) upward so we pick
-        // the maximum onset (e.g. "pl" beats "l" for complain → com-plain).
-        let best = 1;
-        for(let take = 1; take <= C-1; take++){
-          const rs = bt.slice(take).map(t=>t.s).join('');
-          if(isOnset(rs)){ best = C-take; break; }
-        }
-        cuts.add(vB - best);
-      }
-    }
-    const syls = []; let cur = '';
-    for(let i = 0; i < N; i++){ if(cuts.has(i) && cur){ syls.push(cur); cur=''; } cur += T[i].s; }
-    if(cur) syls.push(cur);
-    return syls;
-  }
-
-  // ── Assemble final result ──────────────────────────────────────
-  const coreParts  = coreSplit(coreW);
-  const coreInWord = word.slice(origPfxLen, origStemLen); // slice of original word for casing
-
-  // Restore original casing for each core part
-  // If consonant-doubling dedup occurred, coreW is shorter than coreInWord by dedupExtra.length;
-  // the extra letter belongs to the suffix side (run-NING), so we just map coreW positions.
-  let p2 = 0;
-  const restoredCore = coreParts.map(s => {
-    const o = coreInWord.slice(p2, p2 + s.length); p2 += s.length; return o || s;
-  });
-
-  const pfxPart = prefix ? [word.slice(0, origPfxLen)] : [];
-  const sfxStr  = dedupExtra + (suffix || '');          // e.g. 'n'+'ing' = 'ning' for running
-  const sfxPart = sfxStr ? [sfxStr] : [];
-
-  return [...pfxPart, ...restoredCore, ...sfxPart];
+  const parts = splitCore(w);
+  // Restore original casing
+  let pos = 0;
+  return parts.map(p => { const orig = word.slice(pos, pos + p.length); pos += p.length; return orig || p; });
 }
 function getSyllables(word){
   const key = word.toLowerCase().trim();
@@ -1559,24 +1302,8 @@ function getSyllables(word){
 // Apply syllable colors to all .en-syllable[data-word] spans in a container (or document)
 function colorSyllableSpans(container){
   (container||document).querySelectorAll('.en-syllable[data-word]').forEach(sp=>{
-    const raw = sp.dataset.word;
-    if(!raw) return;
-    if(raw.includes(' ')){
-      let colorIdx = 0;
-      sp.innerHTML = raw.split(' ').map((token, ti) => {
-        if(!token) return ' ';
-        const parts = getSyllables(token);
-        const coloured = parts.map(s => {
-          const c = SYLLABLE_COLORS[colorIdx % SYLLABLE_COLORS.length];
-          colorIdx++;
-          return `<span style="font-size:14px;color:${c};font-weight:700">${s}</span>`;
-        }).join('');
-        return (ti > 0 ? ' ' : '') + coloured;
-      }).join('');
-    } else {
-      const parts = getSyllables(raw);
-      if(parts.length>1) sp.innerHTML=syllableHTML(parts,'14px');
-    }
+    const parts=getSyllables(sp.dataset.word);
+    if(parts.length>1) sp.innerHTML=syllableHTML(parts,'14px');
   });
 }
 
@@ -1589,24 +1316,6 @@ function syllableHTML(parts, fontSize){
 
 function renderSyllableWord(word, el, fontSize){
   if(!word){ el.textContent=''; return; }
-  // If the entry is a phrase (contains spaces), colour each word independently
-  // but use a continuous colour index across the whole phrase so each syllable
-  // (including single-syllable words) gets a distinct colour.
-  if(word.includes(' ')){
-    const fs = fontSize ? `font-size:${fontSize};` : '';
-    let colorIdx = 0;
-    el.innerHTML = word.split(' ').map((token, ti) => {
-      if(!token) return ' ';
-      const parts = getSyllables(token);
-      const coloured = parts.map(s => {
-        const c = SYLLABLE_COLORS[colorIdx % SYLLABLE_COLORS.length];
-        colorIdx++;
-        return `<span style="${fs}color:${c};font-weight:700">${s}</span>`;
-      }).join('');
-      return (ti > 0 ? ' ' : '') + coloured;
-    }).join('');
-    return;
-  }
   const parts = getSyllables(word);
   if(parts.length <= 1){ el.textContent = word; return; }
   el.innerHTML = syllableHTML(parts, fontSize);
@@ -2158,7 +1867,7 @@ const ACHIEVEMENTS=[
   {id:'score_100',icon:'💰',name:'百分達人',desc:'累積 100 分',check:u=>(u.score||0)>=100},
   {id:'score_500',icon:'🤑',name:'積分高手',desc:'累積 500 分',check:u=>(u.score||0)>=500},
 ];
-function checkStreak(u,days){const dp=u.daily_progress||{};let streak=0;for(let i=0;i<days;i++){const d=new Date();d.setDate(d.getDate()-i);const ds=d.toISOString().slice(0,10);if(dp[ds]?.quizDone)streak++;else break;}return streak>=days;}
+function checkStreak(u,days){const dp=u.daily_progress||{};let streak=0;for(let i=0;i<days;i++){const d=new Date();d.setDate(d.getDate()-i);const ds=d.toISOString().slice(0,10);const best=Object.keys(dp).filter(k=>k===ds||k.endsWith('_'+ds)).map(k=>dp[k]).find(v=>v?.quizDone);if(best)streak++;else break;}return streak>=days;}
 function checkAchievements(u){
   const earned=new Set(u.achievements||[]);const newBadges=[];
   ACHIEVEMENTS.forEach(a=>{if(!earned.has(a.id)&&a.check(u)){earned.add(a.id);newBadges.push(a);}});
@@ -3413,8 +3122,22 @@ window.renderStudentList=async function(){
   }
   allUsers.sort((a,b)=>b.score-a.score);
   const totalStu=allUsers.length;
-  const doneTodayStu=allUsers.filter(u=>u.daily_progress?.[today]?.quizDone).length;
-  const studyDoneStu=allUsers.filter(u=>u.daily_progress?.[today]?.studyDone&&!u.daily_progress?.[today]?.quizDone).length;
+  // Helper: get best daily progress for a user on a date (checks all class-specific keys + date-only)
+  const getStuDp=(u,ds)=>{
+    const dp=u.daily_progress||{};
+    const acct=(window._cachedAccounts||[]).find(a=>a.id===u.id);
+    const classes=acct?.classes||[];
+    let best=dp[ds]||null; // date-only key fallback
+    for(const cid of classes){
+      const d=dp[cid+'_'+ds];
+      if(!best||(d?.quizDone&&!best?.quizDone)||(d?.studyDone&&!best?.studyDone)) best=d||best;
+    }
+    // Also scan all keys that end with _ds
+    Object.keys(dp).forEach(k=>{ if(k.endsWith('_'+ds)){ const d=dp[k]; if(!best||(d?.quizDone&&!best?.quizDone)) best=d||best; } });
+    return best||null;
+  };
+  const doneTodayStu=allUsers.filter(u=>getStuDp(u,today)?.quizDone).length;
+  const studyDoneStu=allUsers.filter(u=>getStuDp(u,today)?.studyDone&&!getStuDp(u,today)?.quizDone).length;
   const all=allUsers;
   list.innerHTML='';
   const summaryEl=document.createElement('div');summaryEl.className='card mb12';
@@ -3425,7 +3148,7 @@ window.renderStudentList=async function(){
   planEl.innerHTML=`<div class="flex gap8 mb8"><span class="bold text-sm">今日新單字（${planWords.length} 個）</span><span class="tag ${isManualPlan?'tag-a':'tag-b'}">${isManualPlan?'手動指定':'系統自動'}</span></div><div style="display:flex;flex-wrap:wrap;gap:4px">${planWords.map(w=>`<span style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px 8px;font-size:12px">${w.en}</span>`).join('')}</div>`;
   list.appendChild(planEl);
   all.forEach((u,i)=>{
-    const todayDp=u.daily_progress?.[today];
+    const todayDp=getStuDp(u,today);
     let dailyTag='';
     if(!todayDp)dailyTag='<span class="tag" style="background:#f1f5f9;color:#64748b">未開始</span>';
     else if(todayDp.quizDone){const pct=todayDp.finalPct||(todayDp.totalWords?Math.round((todayDp.quizCorrect||0)/todayDp.totalWords*100):0);const retries=todayDp.retries||0;dailyTag=`<span class="tag tag-g">✓ ${pct}%${retries>0?' (重試'+retries+'次)':''}</span>`;}
@@ -3549,7 +3272,8 @@ async function showStudentDetail(u){
   detail.appendChild(chartEl);
 
   const histEl=document.createElement('div');histEl.className='card mb12';let histHTML='<div class="bold text-sm mb8">📅 近 14 天每日任務</div><div style="display:flex;gap:4px;flex-wrap:wrap">';
-  for(let i=13;i>=0;i--){const d=new Date();d.setDate(d.getDate()-i);const ds=d.toISOString().slice(0,10);const dpDay=dp[ds];const label=i===0?'今':(d.getMonth()+1)+'/'+(d.getDate());let bg,color,icon;if(!dpDay||dpDay.total===0){bg='#f1f5f9';color='#94a3b8';icon='—';}else if(dpDay.quizDone){bg=dpDay.isMakeup?'#e0f2fe':'var(--sl)';color=dpDay.isMakeup?'#0369a1':'var(--success)';icon=(dpDay.finalPct||'✓')+(dpDay.finalPct?'%':'')+(dpDay.isMakeup?'📋':'');}else{bg='var(--wl)';color='var(--warn)';icon=dpDay.doneIds?.length?dpDay.doneIds.length+'...':'進行中';}histHTML+=`<div style="background:${bg};color:${color};border-radius:6px;padding:5px 7px;text-align:center;font-size:11px;font-weight:500;min-width:36px"><div>${label}</div><div style="margin-top:1px">${icon}</div></div>`;}
+  const _getBestDp=(dp,ds,classes)=>{let best=dp[ds]||null;(classes||[]).forEach(cid=>{const d=dp[cid+'_'+ds];if(!best||(d?.quizDone&&!best?.quizDone)) best=d||best;});Object.keys(dp).forEach(k=>{if(k.endsWith('_'+ds)){const d=dp[k];if(!best||(d?.quizDone&&!best?.quizDone)) best=d||best;}});return best;};
+  for(let i=13;i>=0;i--){const d=new Date();d.setDate(d.getDate()-i);const ds=d.toISOString().slice(0,10);const dpDay=_getBestDp(dp,ds,stuClasses);const label=i===0?'今':(d.getMonth()+1)+'/'+(d.getDate());let bg,color,icon;if(!dpDay||dpDay.total===0){bg='#f1f5f9';color='#94a3b8';icon='—';}else if(dpDay.quizDone){bg=dpDay.isMakeup?'#e0f2fe':'var(--sl)';color=dpDay.isMakeup?'#0369a1':'var(--success)';icon=(dpDay.finalPct||'✓')+(dpDay.finalPct?'%':'')+(dpDay.isMakeup?'📋':'');}else{bg='var(--wl)';color='var(--warn)';icon=dpDay.doneIds?.length?dpDay.doneIds.length+'...':'進行中';}histHTML+=`<div style="background:${bg};color:${color};border-radius:6px;padding:5px 7px;text-align:center;font-size:11px;font-weight:500;min-width:36px"><div>${label}</div><div style="margin-top:1px">${icon}</div></div>`;}
   histHTML+='</div>';histEl.innerHTML=histHTML;detail.appendChild(histEl);
   // incomplete days analysis (when filter applied)
   const filterFrom=document.getElementById('filter-date-from')?.value||'';
@@ -3561,7 +3285,7 @@ async function showStudentDetail(u){
     let d=new Date(filterFrom); const toD=new Date(filterTo);
     while(d<=toD){
       const ds=d.toISOString().slice(0,10);
-      if(!dp[ds]?.quizDone) incDays.push(ds);
+      if(!_getBestDp(dp,ds,stuClasses)?.quizDone) incDays.push(ds);
       d.setDate(d.getDate()+1);
     }
     if(incDays.length){
@@ -3569,7 +3293,7 @@ async function showStudentDetail(u){
         <div style="display:flex;flex-wrap:wrap;gap:4px">
           ${incDays.map(ds=>{
             const dd=new Date(ds);
-            const dayDp=dp[ds];
+            const dayDp=_getBestDp(dp,ds,stuClasses);
             let status='未開始',bg='#f1f5f9',color='#94a3b8';
             if(dayDp?.studyDone){status='測驗未做';bg='var(--wl)';color='var(--warn)';}
             else if(dayDp?.doneIds?.length){status='背誦中';bg='var(--wl)';color='var(--warn)';}
