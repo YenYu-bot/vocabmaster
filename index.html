@@ -664,7 +664,9 @@ function getMissedDates() {
   let d=new Date(joinDate); const todayD=new Date(today);
   while(d<todayD){
     const ds=d.toISOString().slice(0,10);
-    if(!dp[ds]?.quizDone&&computeNewWordsForDate(ds).length>0) missed.push(ds);
+    const _classes=CU?.classes||[];
+    const _best=dp[ds]||_classes.map(cid=>dp[cid+'_'+ds]).find(v=>v)||Object.keys(dp).filter(k=>k.endsWith('_'+ds)).map(k=>dp[k]).find(v=>v)||null;
+    if(!_best?.quizDone&&computeNewWordsForDate(ds).length>0) missed.push(ds);
     d.setDate(d.getDate()+1);
   }
   return missed.reverse();
@@ -678,7 +680,9 @@ function renderMissedTasks() {
   if(!missed.length){section.style.display='none';return;}
   section.style.display='block'; countEl.textContent=missed.length+' 天未完成'; list.innerHTML='';
   missed.forEach(ds=>{
-    const dp=CU_DATA.daily_progress||{}; const dayDp=dp[ds];
+    const dp=CU_DATA.daily_progress||{};
+    const _cls=CU?.classes||[];
+    const dayDp=dp[ds]||_cls.map(cid=>dp[cid+'_'+ds]).find(v=>v)||Object.keys(dp).filter(k=>k.endsWith('_'+ds)).map(k=>dp[k]).find(v=>v)||null;
     const wordIds=computeNewWordsForDate(ds);
     const words=wordIds.map(id=>AW.find(w=>w.id===id)).filter(Boolean);
     const dateObj=new Date(ds);
