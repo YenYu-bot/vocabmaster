@@ -1298,7 +1298,10 @@ function splitSyllables(word){
 function getSyllables(word){
   const key = word.toLowerCase().trim();
   if(!syllableCache[key]){
-    syllableCache[key] = splitSyllables(word);
+    const parts = splitSyllables(word);
+    // 安全防呆：音節拆分後必須完整保留原單字。
+    // 若拆分結果少字母或多字母，就不要套用彩色音節，直接顯示原字。
+    syllableCache[key] = parts.join('') === word ? parts : [word];
   }
   return syllableCache[key];
 }
