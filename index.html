@@ -426,11 +426,14 @@ function renderNotebook(){
   const nb=getNotebook();
   const countEl=document.getElementById('notebook-count');
   const list=document.getElementById('notebook-list');
+  const clearSection=document.getElementById('notebook-clear-section');
   if(countEl) countEl.textContent=nb.size+' 個單字';
   if(!nb.size){
     list.innerHTML='<div style="text-align:center;padding:32px 0"><div style="font-size:40px;margin-bottom:8px">📖</div><p class="text-muted">複習本是空的</p><p class="text-muted text-sm mt8">背誦時按 📌 或測驗答錯時自動加入</p></div>';
+    if(clearSection) clearSection.style.display='none';
     return;
   }
+  if(clearSection) clearSection.style.display='block';
   list.innerHTML='';
   // gather all words across all classes
   const allWords=[];
@@ -1223,6 +1226,82 @@ function splitSyllables(word){
     'classmate':'class-mate','homework':'home-work','birthday':'birth-day',
     'everything':'ev-ery-thing','somewhere':'some-where','anywhere':'any-where',
     'every':'ev-ery',
+    // -age family
+    'damage':'dam-age','manage':'man-age','village':'vil-lage','message':'mes-sage',
+    'passage':'pas-sage','cabbage':'cab-bage','garbage':'gar-bage','courage':'cour-age',
+    'average':'av-er-age','beverage':'bev-er-age','language':'lan-guage',
+    'package':'pack-age','storage':'stor-age','shortage':'short-age',
+    'marriage':'mar-riage','carriage':'car-riage','luggage':'lug-gage',
+    'baggage':'bag-gage','cottage':'cot-tage','advantage':'ad-van-tage',
+    'disadvantage':'dis-ad-van-tage','percentage':'per-cent-age',
+    'orange':'or-ange','palace':'pal-ace',
+    // -ance/-ence
+    'distance':'dis-tance','sentence':'sen-tence','absence':'ab-sence',
+    'ambulance':'am-bu-lance','entrance':'en-trance','romance':'ro-mance',
+    'advance':'ad-vance','finance':'fi-nance','announce':'an-nounce',
+    'pronounce':'pro-nounce','influence':'in-flu-ence','difference':'dif-fer-ence',
+    'reference':'ref-er-ence','conference':'con-fer-ence','experience':'ex-pe-ri-ence',
+    'evidence':'ev-i-dence','presence':'pres-ence','audience':'au-di-ence',
+    'silence':'si-lence','violence':'vi-o-lence','patience':'pa-tience',
+    'importance':'im-por-tance','performance':'per-for-mance',
+    'appearance':'ap-pear-ance','insurance':'in-sur-ance',
+    'tolerance':'tol-er-ance','guidance':'guid-ance',
+    'residence':'res-i-dence','confidence':'con-fi-dence',
+    'independence':'in-de-pend-ence','dependence':'de-pend-ence',
+    'occurrence':'oc-cur-rence','convenience':'con-ven-ience',
+    'intelligence':'in-tel-li-gence','significance':'sig-nif-i-cance',
+    // -ble/-ple/-cle family
+    'possible':'pos-si-ble','responsible':'re-spon-si-ble','impossible':'im-pos-si-ble',
+    'flexible':'flex-i-ble','terrible':'ter-ri-ble','horrible':'hor-ri-ble',
+    'visible':'vis-i-ble','sensible':'sen-si-ble',
+    'capable':'ca-pa-ble','suitable':'suit-a-ble','valuable':'val-u-a-ble',
+    'available':'a-vail-a-ble','reliable':'re-li-a-ble','remarkable':'re-mark-a-ble',
+    'inevitable':'in-ev-i-ta-ble','accessible':'ac-ces-si-ble',
+    'compatible':'com-pat-i-ble','incredible':'in-cred-i-ble',
+    'acceptable':'ac-cept-a-ble','favorable':'fa-vor-a-ble',
+    'reasonable':'rea-son-a-ble','considerable':'con-sid-er-a-ble',
+    'memorable':'mem-o-ra-ble','adorable':'a-dor-a-ble',
+    'bicycle':'bi-cy-cle','recycle':'re-cy-cle','article':'ar-ti-cle',
+    'particle':'par-ti-cle','obstacle':'ob-sta-cle','spectacle':'spec-ta-cle',
+    'miracle':'mir-a-cle','vehicle':'ve-hi-cle','schedule':'sched-ule',
+    'module':'mod-ule','capsule':'cap-sule',
+    // -ture (additional)
+    'temperature':'tem-per-a-ture','literature':'lit-er-a-ture',
+    'architecture':'ar-chi-tec-ture','manufacture':'man-u-fac-ture',
+    'agriculture':'ag-ri-cul-ture','signature':'sig-na-ture',
+    'miniature':'min-i-a-ture','overture':'o-ver-ture',
+    // -phone/-sphere
+    'telephone':'tel-e-phone','microphone':'mi-cro-phone',
+    'atmosphere':'at-mos-phere','hemisphere':'hem-i-sphere',
+    'saxophone':'sax-o-phone',
+    // -ful
+    'helpful':'help-ful','thankful':'thank-ful','successful':'suc-cess-ful',
+    'powerful':'pow-er-ful','colorful':'col-or-ful','careful':'care-ful',
+    'hopeful':'hope-ful','graceful':'grace-ful','wasteful':'waste-ful',
+    'faithful':'faith-ful','peaceful':'peace-ful','useful':'use-ful',
+    'wonderful':'won-der-ful','harmful':'harm-ful','fearful':'fear-ful',
+    'cheerful':'cheer-ful','skillful':'skill-ful','restful':'rest-ful',
+    'playful':'play-ful','joyful':'joy-ful','meaningful':'mean-ing-ful',
+    'thoughtful':'thought-ful','truthful':'truth-ful','youthful':'youth-ful',
+    'delightful':'de-light-ful','insightful':'in-sight-ful',
+    // -ony/-ody patterns
+    'colony':'col-o-ny','melody':'mel-o-dy','agony':'ag-o-ny',
+    'ceremony':'cer-e-mo-ny','matrimony':'mat-ri-mo-ny',
+    'testimony':'tes-ti-mo-ny','comedy':'com-e-dy','tragedy':'trag-e-dy',
+    'remedy':'rem-e-dy','strategy':'strat-e-gy',
+    'category':'cat-e-go-ry','territory':'ter-ri-to-ry','inventory':'in-ven-to-ry',
+    // VCV corrections
+    'talent':'tal-ent','present':'pres-ent','resident':'res-i-dent',
+    'president':'pres-i-dent','evident':'ev-i-dent','continent':'con-ti-nent',
+    'prominent':'prom-i-nent','dominant':'dom-i-nant','permanent':'per-ma-nent',
+    'appointment':'ap-point-ment','department':'de-part-ment',
+    'convenient':'con-ven-ient','absent':'ab-sent','silent':'si-lent',
+    'violent':'vi-o-lent','excellent':'ex-cel-lent','innocent':'in-no-cent',
+    'accident':'ac-ci-dent','incident':'in-ci-dent',
+    'confident':'con-fi-dent','efficient':'ef-fi-cient',
+    'sufficient':'suf-fi-cient','patient':'pa-tient',
+    'celebrate':'cel-e-brate','generate':'gen-er-ate','separate':'sep-a-rate',
+    'desperate':'des-per-ate','operate':'op-er-ate','tolerate':'tol-er-ate',
   };
 
   if(EX[w]){
@@ -1274,12 +1353,12 @@ function splitSyllables(word){
             const startsDigraph = DIGRAPHS.some(d => cons.startsWith(d));
             if(startsDigraph && cons.length === 2){
               // e.g. "with-draw": digraph+single = keep digraph left
-              cur += cons[0] + cons[1]; res.push(cur); cur = ''; i += cons.length - 1;
+              cur += cons[0] + cons[1]; res.push(cur); cur = ''; i += cons.length; // digraph: skip both chars taken
             } else if(startsDigraph){
               cur += cons[0]; res.push(cur); cur = ''; i += 1;
             } else {
               // Standard VC-CV: split after splitAfter consonants
-              cur += cons.slice(0, splitAfter); res.push(cur); cur = ''; i += cons.length - 1;
+              cur += cons.slice(0, splitAfter); res.push(cur); cur = ''; i += 1; // skip only the 1 consonant taken
             }
           }
         }
@@ -1298,10 +1377,7 @@ function splitSyllables(word){
 function getSyllables(word){
   const key = word.toLowerCase().trim();
   if(!syllableCache[key]){
-    const parts = splitSyllables(word);
-    // 安全防呆：音節拆分後必須完整保留原單字。
-    // 若拆分結果少字母或多字母，就不要套用彩色音節，直接顯示原字。
-    syllableCache[key] = parts.join('') === word ? parts : [word];
+    syllableCache[key] = splitSyllables(word);
   }
   return syllableCache[key];
 }
@@ -1692,7 +1768,17 @@ window.removeFromNotebookUI=async function(wid,btn){
 window.removeAllSuggested=async function(wids,btn){
   await Promise.all(wids.map(wid=>removeFromNotebook(wid)));
   btn.textContent='✓ 已全部移出';btn.disabled=true;btn.style.background='var(--sl)';btn.style.color='var(--success)';
-  btn.closest('div[style*=background]').querySelectorAll('button[onclick*=removeFromNotebookUI]').forEach(b=>{b.textContent='已移出';b.disabled=true;});
+  // try multiple selectors to find sibling remove buttons
+  const container=btn.closest('[style*="background:var(--sl)"]')||btn.closest('[style*="background"]')||btn.parentElement;
+  if(container) container.querySelectorAll('button').forEach(b=>{if(b!==btn&&!b.disabled){b.textContent='已移出';b.disabled=true;}});
+};
+window.clearAllNotebook=async function(btn){
+  const nb=getNotebook();
+  if(!nb.size){alert('複習本已是空的');return;}
+  if(!confirm('確定要移出複習本的所有單字？')) return;
+  btn.textContent='移出中...';btn.disabled=true;
+  await Promise.all([...nb].map(wid=>removeFromNotebook(wid)));
+  renderNotebook();
 };
 window.retryDailyQuiz=function(){
   dailyQuizWords=shuffle([...SW]);dailyQI=0;dailyQS=0;dailyQC=0;wrongWords=[];
@@ -3705,6 +3791,9 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
       <button class="btn btn-sm" onclick="renderNotebook()">重新整理</button>
     </div>
     <div id="notebook-list"><div class="loading">載入中...</div></div>
+    <div id="notebook-clear-section" style="margin-top:12px;display:none">
+      <button class="btn" style="width:100%;color:var(--danger);border-color:var(--danger);font-size:13px" onclick="clearAllNotebook(this)">全部移出複習本</button>
+    </div>
   </div>
 </div>
 
