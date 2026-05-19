@@ -2938,17 +2938,15 @@ window.diagnoseCourseClasses=async function(){
   window.repairLegacyClassId=async function(){
     const result=modal.querySelector('#repair-result');
     result.style.color='var(--muted)';result.textContent='掃描中...';
+    const freshCourses=await getAll('courses'); // 每次修復前重新撈
     let fixed=0,skipped=0;
-    for(const c of allCourses){
+    for(const c of freshCourses){
       const hasNewIds=Array.isArray(c.classIds)&&c.classIds.length>0;
       const hasLegacy=typeof c.classId==='string'&&c.classId;
-      // 問題情況：有舊 classId 但沒有新 classIds（或新 classIds 不含舊 classId）
       if(hasLegacy&&!hasNewIds){
-        // 把舊 classId 同步進 classIds
-        await updateOne('courses',c.id,{classIds:[c.classId],classId:c.classId});
+        await updateOne('courses',c.id,{classIds:[],classId:null});
         fixed++;
       } else if(hasLegacy&&hasNewIds&&!c.classIds.includes(c.classId)){
-        // classIds 存在但沒包含 classId，以 classIds 為準，清除舊 classId
         await updateOne('courses',c.id,{classId:c.classIds[0]||null});
         fixed++;
       } else {
@@ -2956,7 +2954,7 @@ window.diagnoseCourseClasses=async function(){
       }
     }
     result.style.color='var(--success)';
-    result.textContent=`✅ 修復完成：修正 ${fixed} 個課程，${skipped} 個無需修正。請重新整理頁面後查詢確認。`;
+    result.textContent=`✅ 修復完成：清除 ${fixed} 個課程的舊欄位，${skipped} 個無需修正。請重新整理頁面。`;
   };
   // 自動帶入目前班級
   if(CURRENT_CLASS){
