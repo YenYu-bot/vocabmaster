@@ -3306,9 +3306,39 @@ window.renderStudentList=async function(){
   const filterFrom=document.getElementById('filter-date-from')?.value||'';
   const filterTo=document.getElementById('filter-date-to')?.value||today;
   const filterIncomplete=document.getElementById('filter-incomplete')?.checked||false;
-  const planIds=APP_SETTINGS.todayPlan?.wordIds?.length?APP_SETTINGS.todayPlan.wordIds:computeNewWordsForDate(today);
-  const planWords=planIds.map(id=>AW.find(w=>w.id===id)).filter(Boolean);
-  const isManualPlan=!!(APP_SETTINGS.todayPlan?.wordIds?.length);
+  // 依選擇的班級計算今日單字（若未選擇班級，用第一個有指派的班）
+  const targetCid = filterClass || (CU.assignedClasses?.[0]) || CURRENT_CLASS?.id || '';
+  // 若 CLASS_DATA_CACHE 沒有該班，先載入
+  if(targetCid && !CLASS_DATA_CACHE[targetCid]){
+    const [cs2, ws2, sDoc2, pDoc2] = await Promise.all([
+      getAll('courses'), getAll('words'),
+      getOne('class_settings', targetCid),
+      getOne('daily_plan', targetCid+'_'+today)
+    ]);
+    const cAC = cs2.filter(c=>{
+      if(Array.isArray(c.classIds)) return c.classIds.includes(targetCid);
+      if(c.classIds===undefined) return c.classId===targetCid;
+      return false;
+    }).sort((a,b)=>(a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0));
+    const cAW = ws2.filter(w=>cAC.some(c=>c.id===w.cid)).sort((a,b)=>(a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0));
+    const cSettings = sDoc2 ? {newWordsPerDay:sDoc2.newWordsPerDay||20, startDate:sDoc2.startDate||today, dailyLimit:sDoc2.dailyLimit||20} : {newWordsPerDay:20, startDate:today, dailyLimit:20};
+    cSettings.todayPlan = pDoc2||null;
+    CLASS_DATA_CACHE[targetCid] = {AC:cAC, AW:cAW, settings:cSettings};
+  }
+  let planIds, planWords, isManualPlan;
+  if(targetCid && CLASS_DATA_CACHE[targetCid]){
+    const cd = CLASS_DATA_CACHE[targetCid];
+    const prevAC=AC,prevAW=AW,prevSettings=APP_SETTINGS;
+    AC=cd.AC; AW=cd.AW; APP_SETTINGS=cd.settings;
+    planIds = APP_SETTINGS.todayPlan?.wordIds?.length ? APP_SETTINGS.todayPlan.wordIds : computeNewWordsForDate(today);
+    planWords = planIds.map(id=>AW.find(w=>w.id===id)).filter(Boolean);
+    isManualPlan = !!(APP_SETTINGS.todayPlan?.wordIds?.length);
+    AC=prevAC; AW=prevAW; APP_SETTINGS=prevSettings;
+  } else {
+    planIds = APP_SETTINGS.todayPlan?.wordIds?.length ? APP_SETTINGS.todayPlan.wordIds : computeNewWordsForDate(today);
+    planWords = planIds.map(id=>AW.find(w=>w.id===id)).filter(Boolean);
+    isManualPlan = !!(APP_SETTINGS.todayPlan?.wordIds?.length);
+  }
   let allUsers=(await getAll('users')).filter(u=>u.role!=='admin');
   // use already-loaded accounts from ALL_CLASSES context; only fetch if needed
   const accounts = window._cachedAccounts && Date.now()-window._cachedAccountsTime<120000
