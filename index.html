@@ -2876,44 +2876,53 @@ window.toggleCourseGrouping=function(){
 window.diagnoseCourseClasses=async function(){
   const modal=document.createElement('div');
   modal.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
-  modal.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px;width:100%;max-width:480px;max-height:88vh;overflow-y:auto">
+  modal.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px;width:100%;max-width:520px;max-height:88vh;overflow-y:auto">
     <div class="bold mb4">⚠️ 課程班級指派診斷</div>
-    <div class="text-muted mb12" style="font-size:13px">掃描所有課程，列出可能錯誤指派的項目。</div>
-    <div id="diag-body"><div class="loading">掃描中...</div></div>
+    <div class="text-muted mb8" style="font-size:13px">輸入班級 ID（如 <code>高中-高二</code>），列出所有被指派到該班的課程。</div>
+    <div class="flex gap8 mb12">
+      <input id="diag-class-input" class="mb0" placeholder="輸入班級 ID，例如：高中-高二" style="flex:1;font-size:13px"/>
+      <button class="btn btn-p btn-sm" onclick="runDiag()">查詢</button>
+    </div>
+    <div id="diag-body"></div>
     <button class="btn mt12" style="width:100%" onclick="this.closest('[style*=fixed]').remove()">關閉</button>
   </div>`;
   document.body.appendChild(modal);
-  try{
-    const allCourses=await getAll('courses');
-    const allClasses=await getAll('classes');
-    const allClassIds=new Set(allClasses.map(c=>c.id));
-    // 找出：課程的 classIds 裡有不存在於 classes collection 的班級 ID
-    // 或是課程同時被指派給超過 N 個班級（可疑）
+  const allCourses=await getAll('courses');
+  const allClasses=await getAll('classes');
+  window.runDiag=async function(){
+    const filterCid=(modal.querySelector('#diag-class-input').value||'').trim();
     const body=modal.querySelector('#diag-body');
-    let html='';
-    let problemCount=0;
+    body.innerHTML='<div class="loading">掃描中...</div>';
+    let matched=[];
     allCourses.forEach(c=>{
       const cids=Array.isArray(c.classIds)?c.classIds:(c.classId?[c.classId]:[]);
-      if(!cids.length) return;
-      const ghostIds=cids.filter(id=>!allClassIds.has(id));
-      const isSuspicious=cids.length>3; // 同時被指派給很多班
-      if(ghostIds.length||isSuspicious){
-        problemCount++;
-        html+=`<div style="border:1px solid #fbbf24;border-radius:8px;padding:10px 12px;margin-bottom:8px;background:#fffbeb">
-          <div class="bold text-sm mb4">${c.name}</div>
-          ${ghostIds.length?`<div style="color:#dc2626;font-size:12px;margin-bottom:4px">❌ 不存在的班級 ID：${ghostIds.map(id=>`<code style="background:#fee2e2;padding:1px 4px;border-radius:3px">${id}</code>`).join(' ')}</div>`:''}
-          ${isSuspicious?`<div style="color:#92400e;font-size:12px;margin-bottom:4px">⚠️ 被指派給 ${cids.length} 個班級（可能過多）：${cids.map(id=>{const cls=allClasses.find(x=>x.id===id);return`<span style="background:#fef3c7;padding:1px 4px;border-radius:3px;font-size:11px">${cls?.displayName||id}</span>`;}).join(' ')}</div>`:''}
-          <button class="btn btn-sm" style="margin-top:6px;font-size:12px" onclick="manageCourseClasses('${c.id}');this.closest('[style*=fixed]').remove()">✏️ 修改此課程的班級指派</button>
-        </div>`;
+      if(filterCid){
+        if(cids.includes(filterCid)) matched.push({c,cids});
+      } else {
+        if(cids.length) matched.push({c,cids});
       }
     });
-    if(!problemCount){
-      body.innerHTML='<div style="color:var(--success);font-weight:600;padding:8px 0">✅ 沒有發現問題，所有課程的班級指派都正常。</div>';
-    } else {
-      body.innerHTML=`<div style="color:#dc2626;font-size:13px;margin-bottom:10px">發現 <strong>${problemCount}</strong> 個可疑課程：</div>`+html;
+    if(!matched.length){
+      body.innerHTML=`<div style="color:var(--success);font-weight:600;padding:8px 0">✅ ${filterCid?'「'+filterCid+'」沒有被指派任何課程。':'所有課程都沒有班級指派。'}</div>`;
+      return;
     }
-  }catch(e){
-    modal.querySelector('#diag-body').innerHTML=`<div style="color:var(--danger)">掃描失敗：${e.message}</div>`;
+    let html=`<div style="font-size:13px;margin-bottom:10px;color:#374151">找到 <strong>${matched.length}</strong> 個課程被指派到「${filterCid||'（全部）'}」：</div>`;
+    matched.forEach(({c,cids})=>{
+      const labels=cids.map(id=>{const cls=allClasses.find(x=>x.id===id);return`<span style="background:#e0f2fe;color:#0369a1;padding:1px 6px;border-radius:4px;font-size:11px;margin-right:3px">${cls?.displayName||id}</span>`;}).join('');
+      html+=`<div style="border:1px solid #e5e7eb;border-radius:8px;padding:10px 12px;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;gap:8px">
+        <div>
+          <div class="bold text-sm">${c.name}</div>
+          <div style="margin-top:4px">${labels}</div>
+        </div>
+        <button class="btn btn-sm" style="flex-shrink:0;font-size:12px" onclick="manageCourseClasses('${c.id}');this.closest('[style*=fixed]').remove()">✏️ 修改</button>
+      </div>`;
+    });
+    body.innerHTML=html;
+  };
+  // 自動帶入目前班級
+  if(CURRENT_CLASS){
+    modal.querySelector('#diag-class-input').value=CURRENT_CLASS.id;
+    window.runDiag();
   }
 };
 function makeCourseRow(c,container,dragRef){
