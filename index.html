@@ -266,7 +266,8 @@ async function selectClass(cid) {
       ]);
       const otherAC = cs.filter(c=>{
         if(Array.isArray(c.classIds)) return c.classIds.includes(otherId);
-        return c.classId===otherId;
+        if(c.classIds === undefined) return c.classId===otherId;
+        return false;
       }).sort((a,b)=>(a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0));
       const otherAW = ws.filter(w=>otherAC.some(c=>c.id===w.cid)).sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
       const settings = sDoc ? { newWordsPerDay: sDoc.newWordsPerDay||20, startDate: sDoc.startDate||todayStr(), dailyLimit: sDoc.dailyLimit||20 } : { newWordsPerDay:20, startDate:todayStr(), dailyLimit:20 };
@@ -314,9 +315,12 @@ async function loadAllForClass(cid) {
     getOne('daily_plan', cid + '_' + todayStr())
   ]);
   AC = cs.filter(c => {
-    // support both old classId (string) and new classIds (array)
+    // classIds（陣列）優先；若欄位不存在或非陣列才 fallback 到舊 classId
     if(Array.isArray(c.classIds)) return c.classIds.includes(cid);
-    return c.classId===cid;
+    // classIds 欄位不存在（舊資料）：才用 classId
+    if(c.classIds === undefined) return c.classId === cid;
+    // classIds 是 null 或其他型別：視為無指派
+    return false;
   }).sort((a,b) => (a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0));
   AW = ws.filter(w => AC.some(c=>c.id===w.cid)).sort((a,b)=>(a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0));
   if (settingsDoc) {
