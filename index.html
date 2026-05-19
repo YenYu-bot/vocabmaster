@@ -2879,11 +2879,13 @@ window.diagnoseCourseClasses=async function(){
   modal.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px;width:100%;max-width:520px;max-height:88vh;overflow-y:auto">
     <div class="bold mb4">⚠️ 課程班級指派診斷</div>
     <div class="text-muted mb8" style="font-size:13px">輸入班級 ID（如 <code>高中-高二</code>），列出所有被指派到該班的課程。</div>
-    <div class="flex gap8 mb12">
+    <div class="flex gap8 mb8">
       <input id="diag-class-input" class="mb0" placeholder="輸入班級 ID，例如：高中-高二" style="flex:1;font-size:13px"/>
       <button class="btn btn-p btn-sm" onclick="runDiag()">查詢</button>
     </div>
+    <button class="btn btn-sm mb12" style="width:100%;background:#fef3c7;border-color:#fbbf24;color:#92400e" onclick="repairLegacyClassId()">🔧 一鍵修復舊欄位（classId 殘留問題）</button>
     <div id="diag-body"></div>
+    <div id="repair-result" style="margin-top:8px;font-size:13px"></div>
     <button class="btn mt12" style="width:100%" onclick="this.closest('[style*=fixed]').remove()">關閉</button>
   </div>`;
   document.body.appendChild(modal);
@@ -2895,11 +2897,15 @@ window.diagnoseCourseClasses=async function(){
     body.innerHTML='<div class="loading">掃描中...</div>';
     let matched=[];
     allCourses.forEach(c=>{
-      const cids=Array.isArray(c.classIds)?c.classIds:(c.classId?[c.classId]:[]);
+      // 分開處理新舊欄位，讓顯示更清楚
+      const newIds=Array.isArray(c.classIds)?c.classIds:[];
+      const legacyId=typeof c.classId==='string'&&c.classId?c.classId:null;
+      // 合併去重
+      const allIds=[...new Set([...newIds,...(legacyId?[legacyId]:[])])];
       if(filterCid){
-        if(cids.includes(filterCid)) matched.push({c,cids});
+        if(allIds.includes(filterCid)) matched.push({c,newIds,legacyId,allIds});
       } else {
-        if(cids.length) matched.push({c,cids});
+        if(allIds.length) matched.push({c,newIds,legacyId,allIds});
       }
     });
     if(!matched.length){
@@ -2907,17 +2913,46 @@ window.diagnoseCourseClasses=async function(){
       return;
     }
     let html=`<div style="font-size:13px;margin-bottom:10px;color:#374151">找到 <strong>${matched.length}</strong> 個課程被指派到「${filterCid||'（全部）'}」：</div>`;
-    matched.forEach(({c,cids})=>{
-      const labels=cids.map(id=>{const cls=allClasses.find(x=>x.id===id);return`<span style="background:#e0f2fe;color:#0369a1;padding:1px 6px;border-radius:4px;font-size:11px;margin-right:3px">${cls?.displayName||id}</span>`;}).join('');
-      html+=`<div style="border:1px solid #e5e7eb;border-radius:8px;padding:10px 12px;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;gap:8px">
-        <div>
-          <div class="bold text-sm">${c.name}</div>
-          <div style="margin-top:4px">${labels}</div>
+    matched.forEach(({c,newIds,legacyId,allIds})=>{
+      const newLabels=newIds.map(id=>{const cls=allClasses.find(x=>x.id===id);return`<span style="background:#e0f2fe;color:#0369a1;padding:1px 6px;border-radius:4px;font-size:11px;margin-right:3px">${cls?.displayName||id}</span>`;}).join('');
+      const legacyBadge=legacyId?`<div style="margin-top:3px"><span style="font-size:10px;color:#6b7280">舊欄位 classId：</span><span style="background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:4px;font-size:11px">${legacyId}</span></div>`:'';
+      const hasConflict=legacyId&&!newIds.includes(legacyId);
+      html+=`<div style="border:1px solid ${hasConflict?'#fbbf24':'#e5e7eb'};border-radius:8px;padding:10px 12px;margin-bottom:6px;background:${hasConflict?'#fffbeb':'#fff'}">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
+          <div style="flex:1">
+            <div class="bold text-sm">${c.name}</div>
+            <div style="margin-top:4px">${newLabels||'<span style="font-size:11px;color:#9ca3af">（classIds 陣列為空）</span>'}</div>
+            ${legacyBadge}
+            ${hasConflict?`<div style="color:#dc2626;font-size:11px;margin-top:4px">⚠️ 舊欄位 classId 未同步到 classIds 陣列，可能造成誤顯示</div>`:''}
+          </div>
+          <button class="btn btn-sm" style="flex-shrink:0;font-size:12px" onclick="manageCourseClasses('${c.id}');this.closest('[style*=fixed]').remove()">✏️ 修改</button>
         </div>
-        <button class="btn btn-sm" style="flex-shrink:0;font-size:12px" onclick="manageCourseClasses('${c.id}');this.closest('[style*=fixed]').remove()">✏️ 修改</button>
       </div>`;
     });
     body.innerHTML=html;
+  };
+  window.repairLegacyClassId=async function(){
+    const result=modal.querySelector('#repair-result');
+    result.style.color='var(--muted)';result.textContent='掃描中...';
+    let fixed=0,skipped=0;
+    for(const c of allCourses){
+      const hasNewIds=Array.isArray(c.classIds)&&c.classIds.length>0;
+      const hasLegacy=typeof c.classId==='string'&&c.classId;
+      // 問題情況：有舊 classId 但沒有新 classIds（或新 classIds 不含舊 classId）
+      if(hasLegacy&&!hasNewIds){
+        // 把舊 classId 同步進 classIds
+        await updateOne('courses',c.id,{classIds:[c.classId],classId:c.classId});
+        fixed++;
+      } else if(hasLegacy&&hasNewIds&&!c.classIds.includes(c.classId)){
+        // classIds 存在但沒包含 classId，以 classIds 為準，清除舊 classId
+        await updateOne('courses',c.id,{classId:c.classIds[0]||null});
+        fixed++;
+      } else {
+        skipped++;
+      }
+    }
+    result.style.color='var(--success)';
+    result.textContent=`✅ 修復完成：修正 ${fixed} 個課程，${skipped} 個無需修正。請重新整理頁面後查詢確認。`;
   };
   // 自動帶入目前班級
   if(CURRENT_CLASS){
@@ -3122,8 +3157,8 @@ window.saveCourseClasses=async function(cid,btn){
         if(!ALL_CLASSES.find(c=>c.id===id)) ALL_CLASSES.push({id,level,grade});
       }
     }));
-    // keep classId for backward compat (use first class)
-    const classId=classIds[0]||'';
+    // classId 舊欄位：有指派時用第一個班，沒有指派時明確設為 null 避免殘留
+    const classId=classIds[0]||null;
     await updateOne('courses',cid,{classIds,classId});
     // update local AC
     const c=AC.find(x=>x.id===cid);
