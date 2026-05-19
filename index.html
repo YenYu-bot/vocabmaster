@@ -2870,8 +2870,51 @@ let collapsedGroups=new Set();
 window.toggleCourseGrouping=function(){
   courseGrouping=!courseGrouping;
   const btn=document.getElementById('course-group-btn');
-  if(btn){btn.style.background=courseGrouping?'var(--brand)':'';btn.style.color=courseGrouping?'#fff':'';btn.style.borderColor=courseGrouping?'var(--brand)':'';}
+  if(btn){btn.style.background=courseGrouping?'var(--brand)':'';btn.style.color=courseGrouping?'#fff':'';btn.style.borderColor=courseGrouping?'var(--brand)':'';btn.style.color=courseGrouping?'#fff':'';}
   renderAdminCourses();
+};
+window.diagnoseCourseClasses=async function(){
+  const modal=document.createElement('div');
+  modal.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px;width:100%;max-width:480px;max-height:88vh;overflow-y:auto">
+    <div class="bold mb4">⚠️ 課程班級指派診斷</div>
+    <div class="text-muted mb12" style="font-size:13px">掃描所有課程，列出可能錯誤指派的項目。</div>
+    <div id="diag-body"><div class="loading">掃描中...</div></div>
+    <button class="btn mt12" style="width:100%" onclick="this.closest('[style*=fixed]').remove()">關閉</button>
+  </div>`;
+  document.body.appendChild(modal);
+  try{
+    const allCourses=await getAll('courses');
+    const allClasses=await getAll('classes');
+    const allClassIds=new Set(allClasses.map(c=>c.id));
+    // 找出：課程的 classIds 裡有不存在於 classes collection 的班級 ID
+    // 或是課程同時被指派給超過 N 個班級（可疑）
+    const body=modal.querySelector('#diag-body');
+    let html='';
+    let problemCount=0;
+    allCourses.forEach(c=>{
+      const cids=Array.isArray(c.classIds)?c.classIds:(c.classId?[c.classId]:[]);
+      if(!cids.length) return;
+      const ghostIds=cids.filter(id=>!allClassIds.has(id));
+      const isSuspicious=cids.length>3; // 同時被指派給很多班
+      if(ghostIds.length||isSuspicious){
+        problemCount++;
+        html+=`<div style="border:1px solid #fbbf24;border-radius:8px;padding:10px 12px;margin-bottom:8px;background:#fffbeb">
+          <div class="bold text-sm mb4">${c.name}</div>
+          ${ghostIds.length?`<div style="color:#dc2626;font-size:12px;margin-bottom:4px">❌ 不存在的班級 ID：${ghostIds.map(id=>`<code style="background:#fee2e2;padding:1px 4px;border-radius:3px">${id}</code>`).join(' ')}</div>`:''}
+          ${isSuspicious?`<div style="color:#92400e;font-size:12px;margin-bottom:4px">⚠️ 被指派給 ${cids.length} 個班級（可能過多）：${cids.map(id=>{const cls=allClasses.find(x=>x.id===id);return`<span style="background:#fef3c7;padding:1px 4px;border-radius:3px;font-size:11px">${cls?.displayName||id}</span>`;}).join(' ')}</div>`:''}
+          <button class="btn btn-sm" style="margin-top:6px;font-size:12px" onclick="manageCourseClasses('${c.id}');this.closest('[style*=fixed]').remove()">✏️ 修改此課程的班級指派</button>
+        </div>`;
+      }
+    });
+    if(!problemCount){
+      body.innerHTML='<div style="color:var(--success);font-weight:600;padding:8px 0">✅ 沒有發現問題，所有課程的班級指派都正常。</div>';
+    } else {
+      body.innerHTML=`<div style="color:#dc2626;font-size:13px;margin-bottom:10px">發現 <strong>${problemCount}</strong> 個可疑課程：</div>`+html;
+    }
+  }catch(e){
+    modal.querySelector('#diag-body').innerHTML=`<div style="color:var(--danger)">掃描失敗：${e.message}</div>`;
+  }
 };
 function makeCourseRow(c,container,dragRef){
   const ws=AW.filter(w=>w.cid===c.id);
@@ -3921,6 +3964,7 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
       <input id="course-search" class="mb0" placeholder="🔍 搜尋課程名稱..." style="flex:1"
         oninput="renderAdminCourses()"/>
       <button class="btn btn-sm" onclick="toggleCourseGrouping()" id="course-group-btn" style="white-space:nowrap">📂 依班級分組</button>
+      <button class="btn btn-sm" onclick="diagnoseCourseClasses()" style="white-space:nowrap;background:#fef3c7;border-color:#fbbf24;color:#92400e">⚠️ 診斷指派</button>
     </div>
     <div id="admin-course-list"><div class="loading">載入中...</div></div>
     <button class="btn btn-p mt12" style="width:100%" onclick="toggleBox('nc2')">+ 新增課程</button>
