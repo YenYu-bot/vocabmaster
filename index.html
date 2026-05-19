@@ -358,7 +358,10 @@ function computeNewWordsForDate(dateStr) {
   const perDay = APP_SETTINGS.newWordsPerDay||20;
   const dayIdx = Math.max(0, Math.floor((new Date(dateStr)-new Date(startDate))/86400000));
   const ordered = [];
-  AC.forEach(c=>AW.filter(w=>w.cid===c.id).forEach(w=>ordered.push(w.id)));
+  const seenEn = new Set();
+  AC.forEach(c=>AW.filter(w=>w.cid===c.id).forEach(w=>{
+    if(!seenEn.has(w.en)){seenEn.add(w.en);ordered.push(w.id);}
+  }));
   return ordered.slice(dayIdx*perDay, (dayIdx+1)*perDay);
 }
 function getStudentTodayNewWordIds() {
@@ -371,7 +374,10 @@ function getStudentTodayNewWordIds() {
   const joinDayIdx = Math.max(0,Math.floor((new Date(joinDate)-new Date(startDate))/86400000));
   const effectiveDayIdx = Math.max(systemDayIdx,joinDayIdx);
   const ordered = [];
-  AC.forEach(c=>AW.filter(w=>w.cid===c.id).forEach(w=>ordered.push(w.id)));
+  const seenEn2 = new Set();
+  AC.forEach(c=>AW.filter(w=>w.cid===c.id).forEach(w=>{
+    if(!seenEn2.has(w.en)){seenEn2.add(w.en);ordered.push(w.id);}
+  }));
   return ordered.slice(effectiveDayIdx*perDay,(effectiveDayIdx+1)*perDay);
 }
 // ── vocabulary notebook helpers ─────────────────────────────
@@ -1366,7 +1372,19 @@ function splitSyllables(word){
       i++;
     }
     if(cur) res.push(cur);
-    return res.filter(x => x.length > 0);
+    const parts = res.filter(x => x.length > 0);
+    // Silent-e 後處理：若最後一個 part 是「單一子音 + e」（如 -ce, -ve, -te, -de 等），
+    // 合併回前一個音節，避免 practice→prac-ti-ce、private→pri-va-te 的錯誤拆法。
+    // 不合併 -ngle, -mble, -tle 等多子音結尾（那些有自己的音節）。
+    if(parts.length >= 2){
+      const last = parts[parts.length-1];
+      const lastNoE = last.slice(0,-1);
+      if(last.endsWith('e') && lastNoE.length === 1 && !VOWELS_SET.has(lastNoE)){
+        parts[parts.length-2] += last;
+        parts.pop();
+      }
+    }
+    return parts;
   }
 
   const parts = splitCore(w);
@@ -3008,9 +3026,12 @@ window.manageCourseClasses=async function(cid){
   const currentIds=Array.isArray(course.classIds)?course.classIds:(course.classId?[course.classId]:[]);
   const modal=document.createElement('div');
   modal.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:999;display:flex;align-items:center;justify-content:center;padding:16px';
+  const currentLabels=currentIds.map(id=>{const cls=allClasses.find(c=>c.id===id);return cls?.displayName||id;});
   modal.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px;width:100%;max-width:380px;max-height:85vh;overflow-y:auto">
     <div class="bold mb8">📚 指派課程到班級</div>
     <div class="text-muted mb12" style="font-size:13px">課程「${course.name}」可同時指派給多個班級</div>
+    ${currentIds.length?`<div style="background:#fef3c7;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:13px"><div class="bold mb4" style="color:#92400e">⚠️ 目前已指派的班級</div><div style="display:flex;flex-wrap:wrap;gap:6px">${currentIds.map((id,i)=>`<span style="display:inline-flex;align-items:center;gap:4px;background:#fff;border:1px solid #fbbf24;border-radius:6px;padding:2px 8px;font-size:12px">${currentLabels[i]}<button onclick="(function(){const cb=document.querySelector('input[data-cid=\\'${id}\\']');if(cb)cb.checked=false;this.closest('span').style.opacity='0.4';this.closest('span').style.textDecoration='line-through';}).call(this)" style="border:none;background:none;color:#dc2626;cursor:pointer;padding:0;font-size:14px;line-height:1">×</button></span>`).join('')}</div></div>`:''}
+
     <div style="margin-bottom:12px">
       ${Object.entries(CLASS_STRUCTURE).map(([level,grades])=>`
         <div class="bold text-sm mb8" style="color:var(--muted);margin-top:8px">${level}</div>
