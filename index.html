@@ -2184,6 +2184,45 @@ async function renderAccountList(){
     <button class="btn btn-p" style="width:100%" onclick="batchMigrate()">開始遷移</button>
     <div id="migrate-msg" style="margin-top:8px;font-size:13px;white-space:pre-line"></div>`;
   list.appendChild(migrateForm);
+
+  // ── 學期升降級工具 ──────────────────────────────────────────
+  const semesterDiv=document.createElement('div');semesterDiv.className='card mt12';
+  semesterDiv.style.cssText='border-left:3px solid #8b5cf6';
+  semesterDiv.innerHTML=`<div class="bold text-sm mb4" style="color:#7c3aed">🏫 學期升降級（批次操作）</div>
+    <div class="text-muted mb12" style="font-size:13px">學期結束時，依班級批次將學生升級或降級。升降級後可選擇是否重置該班級的學習紀錄。</div>
+    <div class="flex gap8 mb8" style="flex-wrap:wrap">
+      <div style="flex:1;min-width:160px">
+        <label style="font-size:12px;color:var(--muted)">選擇來源班級</label>
+        <select id="batch-from-class" style="width:100%;margin-top:4px" onchange="updateBatchTarget()">
+          <option value="">-- 請選擇 --</option>
+          ${CLASS_PROGRESSION.map(cid=>{const c=ALL_CLASSES.find(x=>x.id===cid);const lbl=c?(c.level+' '+c.grade):cid;return `<option value="${cid}">${lbl}</option>`;}).join('')}
+        </select>
+      </div>
+      <div style="flex:1;min-width:160px">
+        <label style="font-size:12px;color:var(--muted)">目標班級</label>
+        <select id="batch-to-class" style="width:100%;margin-top:4px">
+          <option value="">-- 請先選來源 --</option>
+        </select>
+      </div>
+    </div>
+    <div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:8px;padding:10px;margin-bottom:10px">
+      <div class="bold text-sm mb6" style="color:#7c3aed;font-size:12px">學習紀錄處理方式</div>
+      <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:12px;margin-bottom:5px">
+        <input type="radio" name="batch-reset" value="keep" checked style="margin-top:1px;accent-color:#8b5cf6"/>
+        <span><b>保留</b>學習紀錄（已背單字、SR進度、完成課程不變）</span>
+      </label>
+      <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:12px">
+        <input type="radio" name="batch-reset" value="reset" style="margin-top:1px;accent-color:#8b5cf6"/>
+        <span><b>重置</b>來源班級的學習紀錄（積分與成就仍保留）</span>
+      </label>
+    </div>
+    <div id="batch-student-list" style="background:var(--bg);border-radius:8px;padding:10px;margin-bottom:10px;max-height:200px;overflow-y:auto;font-size:13px;display:none"></div>
+    <div class="flex gap8">
+      <button class="btn" style="flex:1" onclick="previewBatchTransfer()">👀 預覽名單</button>
+      <button class="btn" style="flex:1;background:#8b5cf6;color:#fff;border-color:#7c3aed" onclick="execBatchTransfer()">⚡ 執行批次升降級</button>
+    </div>
+    <div id="batch-transfer-msg" style="margin-top:8px;font-size:13px;white-space:pre-line"></div>`;
+  list.appendChild(semesterDiv);
 }
 
 window.createStudent=async function(){
@@ -2455,6 +2494,78 @@ window.saveStudentClasses=async function(id,btn){
 window.deleteAccount=async function(id){
   if(!confirm(`確定刪除帳號 ${id}？此操作無法復原，學習資料也會一併刪除。`))return;
   await Promise.all([delOne('accounts',id),delOne('users',id)]);
+  renderAccountList();
+};
+
+// ── batch semester transfer ───────────────────────────────────
+window.updateBatchTarget=function(){
+  const fromCid=document.getElementById('batch-from-class').value;
+  const toSel=document.getElementById('batch-to-class');
+  toSel.innerHTML='';
+  if(!fromCid){toSel.innerHTML='<option value="">-- 請先選來源 --</option>';return;}
+  const fromIdx=CLASS_PROGRESSION.indexOf(fromCid);
+  // build options: all classes except the source, highlight prev/next
+  const opts=CLASS_PROGRESSION.filter(cid=>cid!==fromCid).map(cid=>{
+    const c=ALL_CLASSES.find(x=>x.id===cid);
+    const lbl=c?(c.level+' '+c.grade):cid;
+    const idx=CLASS_PROGRESSION.indexOf(cid);
+    const hint=idx===fromIdx+1?' (升一級)':idx===fromIdx-1?' (降一級)':'';
+    return `<option value="${cid}"${idx===fromIdx+1?' selected':''}>${lbl}${hint}</option>`;
+  });
+  toSel.innerHTML='<option value="">-- 請選擇 --</option>'+opts.join('');
+  document.getElementById('batch-student-list').style.display='none';
+};
+
+window.previewBatchTransfer=async function(){
+  const fromCid=document.getElementById('batch-from-class').value;
+  const toCid=document.getElementById('batch-to-class').value;
+  const listEl=document.getElementById('batch-student-list');
+  const msgEl=document.getElementById('batch-transfer-msg');
+  if(!fromCid||!toCid){msgEl.style.color='var(--danger)';msgEl.textContent='請選擇來源和目標班級';return;}
+  msgEl.textContent='載入中...';msgEl.style.color='var(--muted)';
+  const accounts=await getAll('accounts');
+  const students=accounts.filter(a=>a.role==='student'&&(a.classes||[]).includes(fromCid));
+  msgEl.textContent='';
+  listEl.style.display='block';
+  if(!students.length){listEl.innerHTML='<span style="color:var(--muted)">此班級目前沒有學生</span>';return;}
+  const fromCls=ALL_CLASSES.find(c=>c.id===fromCid)||{level:fromCid.split('-')[0],grade:fromCid.split('-')[1]};
+  const toCls=ALL_CLASSES.find(c=>c.id===toCid)||{level:toCid.split('-')[0],grade:toCid.split('-')[1]};
+  listEl.innerHTML=`<div class="bold mb6" style="font-size:12px">共 ${students.length} 名學生（${fromCls.level} ${fromCls.grade} → ${toCls.level} ${toCls.grade}）</div>`
+    +students.map(s=>`<div style="padding:3px 0;border-bottom:1px solid var(--border);font-size:12px">${s.name||s.id} <span style="color:var(--muted)">${s.id}</span></div>`).join('');
+};
+
+window.execBatchTransfer=async function(){
+  const fromCid=document.getElementById('batch-from-class').value;
+  const toCid=document.getElementById('batch-to-class').value;
+  const resetLearning=document.querySelector('input[name=batch-reset]:checked')?.value==='reset';
+  const msgEl=document.getElementById('batch-transfer-msg');
+  if(!fromCid||!toCid){msgEl.style.color='var(--danger)';msgEl.textContent='請選擇來源和目標班級';return;}
+  const fromCls=ALL_CLASSES.find(c=>c.id===fromCid)||{level:fromCid.split('-')[0],grade:fromCid.split('-')[1]};
+  const toCls=ALL_CLASSES.find(c=>c.id===toCid)||{level:toCid.split('-')[0],grade:toCid.split('-')[1]};
+  const fromLabel=(fromCls.level||'')+' '+(fromCls.grade||fromCid);
+  const toLabel=(toCls.level||'')+' '+(toCls.grade||toCid);
+  const accounts=await getAll('accounts');
+  const students=accounts.filter(a=>a.role==='student'&&(a.classes||[]).includes(fromCid));
+  if(!students.length){msgEl.style.color='var(--danger)';msgEl.textContent='此班級沒有學生';return;}
+  const confirmMsg=`確定將「${fromLabel}」全部 ${students.length} 名學生移至「${toLabel}」？\n\n${resetLearning?'⚠️ 將重置所有學生在原班級的學習紀錄（積分和成就保留）':'✅ 保留所有學生的學習紀錄'}`;
+  if(!confirm(confirmMsg))return;
+  msgEl.style.color='var(--muted)';msgEl.textContent='執行中（0/'+students.length+'）...';
+  let done=0,failed=[];
+  for(const s of students){
+    try{
+      await execClassTransfer(s.id,fromCid,toCid,resetLearning);
+      done++;
+      msgEl.textContent=`執行中（${done}/${students.length}）...`;
+    }catch(e){failed.push(s.id+': '+e.message);}
+  }
+  if(failed.length){
+    msgEl.style.color='var(--warn)';
+    msgEl.textContent=`完成 ${done} 人，失敗 ${failed.length} 人：\n${failed.join('\n')}`;
+  }else{
+    msgEl.style.color='var(--success)';
+    msgEl.textContent=`✅ 批次完成！共 ${done} 名學生從 ${fromLabel} → ${toLabel}${resetLearning?' （學習紀錄已重置）':''}`;
+  }
+  document.getElementById('batch-student-list').style.display='none';
   renderAccountList();
 };
 
@@ -3191,36 +3302,99 @@ window.deleteCourse=async function(id){
 };
 
 // ── student progress (admin) ──────────────────────────────────
-window.upgradeStudent=async function(uid,fromCid,toCid,btn){
-  const fromParts=fromCid.split('-');const toParts=toCid.split('-');
-  const fromLabel=fromParts.join(' ');const toLabel=toParts.join(' ');
-  if(!confirm(`確定將此學生從「${fromLabel}」升級到「${toLabel}」？
+// ── core promote/demote helper (used by individual + batch) ──
+async function execClassTransfer(uid, fromCid, toCid, resetLearning){
+  const acct=await getOne('accounts',uid);
+  if(!acct) throw new Error('找不到帳號 '+uid);
+  const classes=acct.classes||[];
+  const newClasses=[...classes.filter(c=>c!==fromCid),toCid];
+  if(!ALL_CLASSES.find(c=>c.id===toCid)){
+    const[level,grade]=toCid.split('-');
+    await setOne('classes',toCid,{id:toCid,level,grade,createdAt:Date.now()});
+    ALL_CLASSES.push({id:toCid,level,grade});
+  }
+  await updateOne('accounts',uid,{classes:newClasses,upgradedAt:Date.now(),upgradedFrom:fromCid});
+  // update user learning data
+  const userData=await getOne('users',uid);
+  if(userData){
+    const type=CLASS_PROGRESSION.indexOf(toCid)>CLASS_PROGRESSION.indexOf(fromCid)?'upgrade':'downgrade';
+    const upgradeHistory=[...(userData.upgradeHistory||[]),{from:fromCid,to:toCid,date:todayStr(),type,reset:resetLearning}];
+    const updates={upgradeHistory};
+    if(resetLearning){
+      // get word IDs belonging to fromCid class
+      const allCourses=await getAll('courses');
+      const allWords=await getAll('words');
+      const fromCourses=allCourses.filter(c=>Array.isArray(c.classIds)?c.classIds.includes(fromCid):c.classId===fromCid);
+      const fromWordIds=new Set(allWords.filter(w=>fromCourses.some(c=>c.id===w.cid)).map(w=>w.id));
+      // remove known entries for those words
+      const known={...(userData.known||{})};
+      fromWordIds.forEach(wid=>delete known[wid]);
+      updates.known=known;
+      // remove SR entries for those words (both classId_wid and wid formats)
+      const sr={...(userData.sr||{})};
+      fromWordIds.forEach(wid=>{delete sr[fromCid+'_'+wid];delete sr[wid];});
+      updates.sr=sr;
+      // remove completed courses for fromCid
+      const comp=(userData.completed_courses||[]).filter(cid=>!fromCourses.some(c=>c.id===cid));
+      updates.completed_courses=comp;
+    }
+    await updateOne('users',uid,updates);
+  }
+}
 
-舊班級資料會保留，學生將加入新班級。`))return;
-  btn.disabled=true;btn.textContent='升級中...';
-  try{
-    const acct=await getOne('accounts',uid);
-    if(!acct){alert('找不到帳號');return;}
-    const classes=acct.classes||[];
-    // remove old class, add new class
-    const newClasses=[...classes.filter(c=>c!==fromCid),toCid];
-    // ensure new class exists
-    if(!ALL_CLASSES.find(c=>c.id===toCid)){
-      const[level,grade]=toCid.split('-');
-      await setOne('classes',toCid,{id:toCid,level,grade,createdAt:Date.now()});
-      ALL_CLASSES.push({id:toCid,level,grade});
-    }
-    await updateOne('accounts',uid,{classes:newClasses,upgradedAt:Date.now(),upgradedFrom:fromCid});
-    // record upgrade in user data
-    const userData=await getOne('users',uid);
-    if(userData){
-      const upgradeHistory=[...(userData.upgradeHistory||[]),{from:fromCid,to:toCid,date:todayStr()}];
-      await updateOne('users',uid,{upgradeHistory});
-    }
-    alert(`✅ 升級完成！${toLabel} 班見！`);
-    window.showStudentList();window.renderStudentList();
-  }catch(e){alert('升級失敗：'+e.message);btn.disabled=false;btn.textContent='執行升級 →';}
+window.upgradeStudent=async function(uid,fromCid,toCid,btn){
+  openTransferModal(uid,fromCid,toCid,'upgrade',btn);
 };
+
+window.demoteStudent=async function(uid,fromCid,toCid,btn){
+  openTransferModal(uid,fromCid,toCid,'downgrade',btn);
+};
+
+function openTransferModal(uid,fromCid,toCid,type,triggerBtn){
+  const fromCls=ALL_CLASSES.find(c=>c.id===fromCid)||{level:fromCid.split('-')[0],grade:fromCid.split('-')[1]};
+  const toCls=ALL_CLASSES.find(c=>c.id===toCid)||{level:toCid.split('-')[0],grade:toCid.split('-')[1]};
+  const fromLabel=(fromCls.level||'')+' '+(fromCls.grade||fromCid);
+  const toLabel=(toCls.level||'')+' '+(toCls.grade||toCid);
+  const isUp=type==='upgrade';
+  const modal=document.createElement('div');
+  modal.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:999;display:flex;align-items:center;justify-content:center;padding:16px';
+  modal.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px;width:100%;max-width:380px">
+    <div class="bold mb4" style="font-size:16px">${isUp?'🎓 升級確認':'⬇️ 降級確認'}</div>
+    <div class="text-muted mb12" style="font-size:13px">${fromLabel} → ${toLabel}</div>
+    <div style="background:${isUp?'#f0fdf4':'#fff7ed'};border:1px solid ${isUp?'#86efac':'#fdba74'};border-radius:8px;padding:12px;margin-bottom:12px">
+      <div class="bold text-sm mb8" style="color:${isUp?'#15803d':'#c2410c'}">重置學習紀錄</div>
+      <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:13px;margin-bottom:6px">
+        <input type="radio" name="reset-mode" value="keep" checked style="margin-top:2px;accent-color:var(--brand)"/>
+        <span><b>保留</b>原有的學習紀錄（已背單字、SR進度、已完成課程）<br><span style="color:var(--muted);font-size:11px">學生在新班級從目前進度繼續，已學單字不需重學</span></span>
+      </label>
+      <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;font-size:13px">
+        <input type="radio" name="reset-mode" value="reset" style="margin-top:2px;accent-color:var(--brand)"/>
+        <span><b>重置</b>原班級的學習紀錄（已背單字、SR、已完成課程將清除）<br><span style="color:var(--muted);font-size:11px">積分、成就、日期紀錄、複習本會完整保留</span></span>
+      </label>
+    </div>
+    <div class="flex gap8">
+      <button class="btn btn-p" style="flex:1" id="confirm-transfer-btn">${isUp?'確認升級':'確認降級'}</button>
+      <button class="btn" style="flex:1" onclick="this.closest('[style*=fixed]').remove()">取消</button>
+    </div>
+    <div id="transfer-msg" style="margin-top:8px;font-size:13px"></div>
+  </div>`;
+  document.body.appendChild(modal);
+  modal.querySelector('#confirm-transfer-btn').onclick=async function(){
+    const resetLearning=modal.querySelector('input[name=reset-mode]:checked').value==='reset';
+    this.disabled=true;this.textContent='處理中...';
+    const msg=modal.querySelector('#transfer-msg');
+    msg.style.color='var(--muted)';msg.textContent='更新中...';
+    try{
+      await execClassTransfer(uid,fromCid,toCid,resetLearning);
+      msg.style.color='var(--success)';msg.textContent=`✅ ${isUp?'升級':'降級'}完成！`;
+      setTimeout(()=>{modal.remove();window.showStudentList();window.renderStudentList();},900);
+    }catch(e){
+      msg.style.color='var(--danger)';msg.textContent='失敗：'+e.message;
+      this.disabled=false;this.textContent=isUp?'確認升級':'確認降級';
+      if(triggerBtn){triggerBtn.disabled=false;triggerBtn.textContent=isUp?'執行升級 →':'執行降級 ↓';}
+    }
+  };
+}
 
 window.showStudentList=function(){
   document.getElementById('stu-panel-title').textContent='所有學生';
@@ -3423,22 +3597,27 @@ async function showStudentDetail(u){
   delBtn.onclick=async()=>{if(!confirm('確定刪除「'+(u.name||u.id)+'」的所有學習記錄？'))return;await delOne('users',u.id);window.showStudentList();window.renderStudentList();};
   detail.appendChild(delBtn);
 
-  // upgrade check
+  // upgrade/downgrade management
   const acct=await getOne('accounts',u.id);
   const stuClasses=acct?.classes||[];
   if(stuClasses.length>0){
     const upgradeDiv=document.createElement('div');upgradeDiv.className='card mb12';
-    let upgradeHTML='<div class="bold text-sm mb8">🎓 升級管理</div>';
+    let upgradeHTML='<div class="bold text-sm mb8">🎓 升降級管理</div>';
+    const allCoursesCached=await getAll('courses');
+    const allWordsCached=await getAll('words');
     for(const cid of stuClasses){
       const cls=ALL_CLASSES.find(c=>c.id===cid);
       const nextCid=getNextClass(cid);
+      const prevIdx=CLASS_PROGRESSION.indexOf(cid)-1;
+      const prevCid=prevIdx>=0?CLASS_PROGRESSION[prevIdx]:null;
       const nextCls=nextCid?ALL_CLASSES.find(c=>c.id===nextCid)||{id:nextCid,level:nextCid.split('-')[0],grade:nextCid.split('-')[1]}:null;
+      const prevCls=prevCid?ALL_CLASSES.find(c=>c.id===prevCid)||{id:prevCid,level:prevCid.split('-')[0],grade:prevCid.split('-')[1]}:null;
       // get class settings for upgrade threshold
       const clsSettings=await getOne('class_settings',cid);
       const threshold={completion:clsSettings?.upgradeCompletion||0,accuracy:clsSettings?.upgradeAccuracy||0};
       // calculate student's performance in this class
-      const clsAC=(await getAll('courses')).filter(c=>c.classId===cid);
-      const clsAW=(await getAll('words')).filter(w=>clsAC.some(c=>c.id===w.cid));
+      const clsAC=allCoursesCached.filter(c=>Array.isArray(c.classIds)?c.classIds.includes(cid):c.classId===cid);
+      const clsAW=allWordsCached.filter(w=>clsAC.some(c=>c.id===w.cid));
       const totalWords=clsAW.length;
       const learnedWords=clsAW.filter(w=>known[w.id]).length;
       const completionPct=totalWords?Math.round(learnedWords/totalWords*100):0;
@@ -3457,11 +3636,22 @@ async function showStudentDetail(u){
           課程完成率：${completionPct}%${threshold.completion>0?' (門檻 '+threshold.completion+'%)':' (無門檻)'} ・
           測驗正確率：${accuracyPct}%${threshold.accuracy>0?' (門檻 '+threshold.accuracy+'%)':' (無門檻)'}
         </div>
-        ${nextCid?`<div class="flex gap8">
-          <span class="text-muted" style="font-size:12px">升級到：${nextCls?nextCls.level+' '+nextCls.grade:nextCid}</span>
-          ${canUpgrade?`<button class="btn btn-sm btn-p" onclick="upgradeStudent('${u.id}','${cid}','${nextCid}',this)">執行升級 →</button>`:''}
-        </div>`:'<span class="text-muted" style="font-size:12px">（已是最高班級）</span>'}
+        <div class="flex gap8" style="flex-wrap:wrap">
+          ${nextCid?`<button class="btn btn-sm ${canUpgrade?'btn-p':''}" onclick="upgradeStudent('${u.id}','${cid}','${nextCid}',this)">升級 → ${nextCls?nextCls.level+' '+nextCls.grade:nextCid}</button>`:'<span class="text-muted" style="font-size:12px">（已是最高班級）</span>'}
+          ${prevCid?`<button class="btn btn-sm" style="color:#b45309;border-color:#d97706" onclick="demoteStudent('${u.id}','${cid}','${prevCid}',this)">降級 ↓ ${prevCls?prevCls.level+' '+prevCls.grade:prevCid}</button>`:''}
+        </div>
       </div>`;
+    }
+    // show transfer history
+    const hist=(u.upgradeHistory||[]).slice().reverse().slice(0,5);
+    if(hist.length){
+      upgradeHTML+=`<div style="margin-top:10px"><div class="text-muted" style="font-size:12px;margin-bottom:6px">異動記錄（最近5筆）</div>`;
+      hist.forEach(h=>{
+        const typeLabel=h.type==='downgrade'?'⬇️ 降級':'🎓 升級';
+        const resetBadge=h.reset?'<span style="background:#fef3c7;color:#92400e;padding:1px 5px;border-radius:4px;font-size:10px;margin-left:4px">重置紀錄</span>':'';
+        upgradeHTML+=`<div style="font-size:12px;padding:3px 0;color:var(--muted)">${typeLabel} ${h.from} → ${h.to} <span style="opacity:0.7">${h.date}</span>${resetBadge}</div>`;
+      });
+      upgradeHTML+=`</div>`;
     }
     upgradeDiv.innerHTML=upgradeHTML;
     detail.appendChild(upgradeDiv);
