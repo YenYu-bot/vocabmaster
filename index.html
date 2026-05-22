@@ -1644,6 +1644,36 @@ function startDailyQuizFromWords(words,totalCount){
   showDailyQuestion();
 }
 
+// ── spelling hint helper ──────────────────────────────────────
+// Returns hint HTML for fill-in-the-blank questions (null if no hint needed)
+function getSpellingHint(word, pos){
+  const len=word.length;
+  if(len<=7) return null; // no hint for short words
+  let revealed, blanks;
+  if(len>=11){
+    // show first 3 + last 2
+    const prefix=word.slice(0,3);
+    const suffix=word.slice(-2);
+    const midLen=len-5;
+    blanks=midLen>0?'_ '.repeat(midLen).trim():'';
+    revealed=midLen>0?`${prefix} ${blanks} ${suffix}`:`${prefix} ${suffix}`;
+  } else {
+    // 8–10: show first 2 + last 1
+    const prefix=word.slice(0,2);
+    const suffix=word.slice(-1);
+    const midLen=len-3;
+    blanks=midLen>0?'_ '.repeat(midLen).trim():'';
+    revealed=midLen>0?`${prefix} ${blanks} ${suffix}`:`${prefix} ${suffix}`;
+  }
+  const posTag=pos?`<span style="background:var(--brand-l);color:var(--brand-d);padding:1px 7px;border-radius:4px;font-size:11px;font-weight:600">${pos}</span>`:'';
+  return `<div style="margin-bottom:10px;padding:8px 12px;background:var(--bg);border-radius:8px;border:1px solid var(--border);display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+    <span style="font-size:11px;color:var(--muted)">提示</span>
+    <span style="font-size:16px;font-family:monospace;letter-spacing:4px;font-weight:700;color:var(--brand)">${revealed}</span>
+    <span style="font-size:11px;color:var(--muted)">${len} 個字母</span>
+    ${posTag}
+  </div>`;
+}
+
 function showDailyQuestion(){
   const w=dailyQuizWords[dailyQI];
   const pct=Math.round((dailyQI+1)/dailyQuizWords.length*100);
@@ -1655,8 +1685,9 @@ function showDailyQuestion(){
   if(isFill){
     document.getElementById('dq-label').textContent='請拼出正確的英文單字：';
     document.getElementById('dq-word').textContent=w.zh;
-    document.getElementById('dq-pos').textContent=w.pos?'('+w.pos+')':'';
-    document.getElementById('dq-options').innerHTML=`<div style="margin-bottom:10px"><input id="dq-fill" type="text" placeholder="輸入英文單字..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="font-size:18px;padding:12px;border-radius:8px;border:2px solid var(--border);width:100%;background:var(--surface);color:var(--text)" onkeydown="if(event.key==='Enter')submitDailyFill()"/></div><button class="btn btn-p" style="width:100%" onclick="submitDailyFill()">確認</button><div id="dq-fill-result" style="margin-top:8px;font-size:14px;display:none"></div>`;
+    const hint=getSpellingHint(w.en,w.pos);
+    document.getElementById('dq-pos').textContent=hint?'':(w.pos?'('+w.pos+')':''); // pos shown in hint if hint exists
+    document.getElementById('dq-options').innerHTML=`${hint||''}<div style="margin-bottom:10px"><input id="dq-fill" type="text" placeholder="輸入英文單字..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="font-size:18px;padding:12px;border-radius:8px;border:2px solid var(--border);width:100%;background:var(--surface);color:var(--text)" onkeydown="if(event.key==='Enter')submitDailyFill()"/></div><button class="btn btn-p" style="width:100%" onclick="submitDailyFill()">確認</button><div id="dq-fill-result" style="margin-top:8px;font-size:14px;display:none"></div>`;
     setTimeout(()=>{const el=document.getElementById('dq-fill');if(el)el.focus();},80);
   } else {
     document.getElementById('dq-label').textContent='以下哪個是正確翻譯？';
@@ -1839,18 +1870,9 @@ function showQ(){
   document.getElementById('q-question-label').textContent=qtype==='fill'?'請拼出正確的英文單字：':'以下哪個是正確翻譯？';
   if(qtype==='fill'){
     document.getElementById('q-word').textContent=w.zh;
-    document.getElementById('q-pos').textContent=w.pos?'('+w.pos+')':'';
-    const wordLen=w.en.length;
-    const first=w.en[0];
-    const last=w.en[wordLen-1];
-    const blanks=wordLen>2?'_ '.repeat(wordLen-2).trim():'';
-    const hintStr=wordLen===1?first:wordLen===2?first+' '+last:`${first} ${blanks} ${last}`;
-    document.getElementById('q-options').innerHTML=`
-      <div style="margin-bottom:10px;padding:8px 12px;background:var(--bg);border-radius:8px;border:1px solid var(--border)">
-        <span style="font-size:11px;color:var(--muted);margin-right:8px">提示</span>
-        <span style="font-size:16px;font-family:monospace;letter-spacing:4px;font-weight:700;color:var(--brand)">${hintStr}</span>
-        <span style="font-size:11px;color:var(--muted);margin-left:8px">${wordLen} 個字母</span>
-      </div>
+    const hint=getSpellingHint(w.en,w.pos);
+    document.getElementById('q-pos').textContent=hint?'':(w.pos?'('+w.pos+')':''); // pos shown in hint if hint exists
+    document.getElementById('q-options').innerHTML=`${hint||''}
       <div style="margin-bottom:12px"><input id="fill-input" type="text" placeholder="輸入英文單字..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="font-size:18px;padding:12px 14px;border-radius:8px;border:2px solid var(--border);width:100%;background:var(--surface);color:var(--text)" onkeydown="if(event.key==='Enter')submitFill()"/></div>
       <button class="btn btn-p" style="width:100%" onclick="submitFill()">確認答案</button>
       <div id="fill-result" style="margin-top:10px;font-size:14px;display:none"></div>`;
@@ -2550,10 +2572,17 @@ window.execBatchTransfer=async function(){
   const confirmMsg=`確定將「${fromLabel}」全部 ${students.length} 名學生移至「${toLabel}」？\n\n${resetLearning?'⚠️ 將重置所有學生在原班級的學習紀錄（積分和成就保留）':'✅ 保留所有學生的學習紀錄'}`;
   if(!confirm(confirmMsg))return;
   msgEl.style.color='var(--muted)';msgEl.textContent='執行中（0/'+students.length+'）...';
+  // pre-fetch courses/words once to avoid N repeated reads in batch
+  let prefetchedData=null;
+  if(resetLearning){
+    msgEl.textContent='載入課程資料...';
+    const [allCourses,allWords]=await Promise.all([getAll('courses'),getAll('words')]);
+    prefetchedData={allCourses,allWords};
+  }
   let done=0,failed=[];
   for(const s of students){
     try{
-      await execClassTransfer(s.id,fromCid,toCid,resetLearning);
+      await execClassTransfer(s.id,fromCid,toCid,resetLearning,prefetchedData);
       done++;
       msgEl.textContent=`執行中（${done}/${students.length}）...`;
     }catch(e){failed.push(s.id+': '+e.message);}
@@ -3303,11 +3332,13 @@ window.deleteCourse=async function(id){
 
 // ── student progress (admin) ──────────────────────────────────
 // ── core promote/demote helper (used by individual + batch) ──
-async function execClassTransfer(uid, fromCid, toCid, resetLearning){
+// prefetchedData: optional {allCourses, allWords} to avoid repeated getAll in batch mode
+async function execClassTransfer(uid, fromCid, toCid, resetLearning, prefetchedData){
   const acct=await getOne('accounts',uid);
   if(!acct) throw new Error('找不到帳號 '+uid);
   const classes=acct.classes||[];
-  const newClasses=[...classes.filter(c=>c!==fromCid),toCid];
+  // Bug fix: deduplicate in case student already belongs to toCid
+  const newClasses=[...new Set([...classes.filter(c=>c!==fromCid),toCid])];
   if(!ALL_CLASSES.find(c=>c.id===toCid)){
     const[level,grade]=toCid.split('-');
     await setOne('classes',toCid,{id:toCid,level,grade,createdAt:Date.now()});
@@ -3321,9 +3352,9 @@ async function execClassTransfer(uid, fromCid, toCid, resetLearning){
     const upgradeHistory=[...(userData.upgradeHistory||[]),{from:fromCid,to:toCid,date:todayStr(),type,reset:resetLearning}];
     const updates={upgradeHistory};
     if(resetLearning){
-      // get word IDs belonging to fromCid class
-      const allCourses=await getAll('courses');
-      const allWords=await getAll('words');
+      // use pre-fetched data if available (avoids N*getAll in batch mode)
+      const allCourses=prefetchedData?.allCourses||await getAll('courses');
+      const allWords=prefetchedData?.allWords||await getAll('words');
       const fromCourses=allCourses.filter(c=>Array.isArray(c.classIds)?c.classIds.includes(fromCid):c.classId===fromCid);
       const fromWordIds=new Set(allWords.filter(w=>fromCourses.some(c=>c.id===w.cid)).map(w=>w.id));
       // remove known entries for those words
