@@ -1556,6 +1556,13 @@ window.startDaily=function(){
     dailyQuizWords=SW.filter(w=>!answered.has(w.id));
     dailyQI=0;dailyQS=todayDp.quizScore||0;dailyQC=todayDp.quizCorrect||0;
     wrongWords=todayDp.wrongWords||[];dailyRetryCount=0;
+    // Bug fix: if all words already answered but quizDone wasn't saved (e.g. network error),
+    // treat as finished and mark quizDone now
+    if(!dailyQuizWords.length){
+      const dp2={...(u.daily_progress||{})};
+      if(dp2[todayKey]){dp2[todayKey].quizDone=true;u.daily_progress=dp2;updateOne('users',CU.id,{daily_progress:dp2});}
+      alert('🎉 今日任務已完成！明天再來。');return;
+    }
     _enterStudyTabWithQuiz();
     startDailyQuizFromWords(dailyQuizWords,todayDp.totalWords||SW.length); return;
   }
@@ -1627,6 +1634,8 @@ function startDailyQuiz(){
 
 function startDailyQuizFromWords(words,totalCount){
   dailyPhase='quiz';
+  // Guard: if no words remain (e.g. already all answered but quizDone not saved), finish immediately
+  if(!words||!words.length){finishDailyTask();return;}
   const studyTab=document.getElementById('t-study');
   studyTab.innerHTML=`
     <div id="dq-header" class="flex mb12" style="justify-content:space-between;align-items:center">
@@ -1676,6 +1685,8 @@ function getSpellingHint(word, pos){
 
 function showDailyQuestion(){
   const w=dailyQuizWords[dailyQI];
+  // Safety: if word is undefined (list exhausted), go to finish
+  if(!w){finishDailyTask();return;}
   const pct=Math.round((dailyQI+1)/dailyQuizWords.length*100);
   document.getElementById('dq-progress').textContent=(dailyQI+1)+' / '+dailyQuizWords.length;
   document.getElementById('dq-bar').style.width=pct+'%';
