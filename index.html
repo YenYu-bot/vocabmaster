@@ -1544,6 +1544,15 @@ function _enterStudyTabWithQuiz(){
 window.startDaily=function(){
   const today=todayStr(); const u=CU_DATA; const dp=u.daily_progress||{};
   const todayKey=dpKey(today);
+  const todayDpCheck=dp[todayKey]||dp[today];
+  // Detect corrupt state: quizDone=true but finalPct is missing/0 and totalWords>0
+  // This happens when quiz was marked done without actually completing (e.g. empty-SW bug)
+  if(todayDpCheck?.quizDone&&!todayDpCheck?.finalPct&&(todayDpCheck?.totalWords||0)>0){
+    // Reset quizDone so student can redo the quiz
+    if(dp[todayKey]){dp[todayKey].quizDone=false;dp[todayKey].quizStarted=false;dp[todayKey].answeredIds=[];}
+    u.daily_progress=dp; updateOne('users',CU.id,{daily_progress:dp});
+    // fall through to restart quiz below
+  }
   if(dp[todayKey]?.quizDone||(dp[today]?.quizDone&&!CURRENT_CLASS?.id)){alert('🎉 今日任務已全部完成！明天再來。');return;}
   makeupDate=null; dailyMode=true;
   SW=getDailyWords();
@@ -1767,6 +1776,8 @@ window.dailyQuizNext=function(){dailyQI++;if(dailyQI>=dailyQuizWords.length){fin
 async function finishDailyTask(){
   const u=CU_DATA; const today=todayStr();
   const totalWords=SW.length;
+  // Safety: if SW is empty here something went wrong upstream, don't write quizDone
+  if(!totalWords){console.warn('finishDailyTask called with empty SW, aborting');return;}
   const pct=Math.round(dailyQC/totalWords*100);
   const passed=pct>=PASS_THRESHOLD*100;
   if(!passed){
@@ -1853,8 +1864,10 @@ window.clearAllNotebook=async function(btn){
 };
 window.retryDailyQuiz=function(){
   dailyQuizWords=shuffle([...SW]);dailyQI=0;dailyQS=0;dailyQC=0;wrongWords=[];
-  const targetDate=makeupDate||todayStr();const dp={...(CU_DATA.daily_progress||{})};
-  if(dp[targetDate]){dp[targetDate].answeredIds=[];dp[targetDate].quizScore=0;dp[targetDate].quizCorrect=0;CU_DATA.daily_progress=dp;}
+  const targetDate=makeupDate||todayStr();
+  const retryKey=makeupDate?makeupDate:dpKey(targetDate); // Bug fix: use dpKey, not plain date
+  const dp={...(CU_DATA.daily_progress||{})};
+  if(dp[retryKey]){dp[retryKey].answeredIds=[];dp[retryKey].quizScore=0;dp[retryKey].quizCorrect=0;CU_DATA.daily_progress=dp;}
   updateOne('users',CU.id,{daily_progress:dp});
   startDailyQuizFromWords(dailyQuizWords,SW.length);
 };
