@@ -1547,6 +1547,13 @@ window.startDaily=function(){
   if(dp[todayKey]?.quizDone||(dp[today]?.quizDone&&!CURRENT_CLASS?.id)){alert('🎉 今日任務已全部完成！明天再來。');return;}
   makeupDate=null; dailyMode=true;
   SW=getDailyWords();
+  // Bug fix: if studyDone but getDailyWords() returns empty (SR dates already updated),
+  // restore SW from the saved doneIds snapshot so quiz can proceed
+  const todayDpEarly=dp[todayKey]||dp[today];
+  if(!SW.length&&todayDpEarly?.studyDone&&!todayDpEarly?.quizDone){
+    const savedIds=todayDpEarly.doneIds||[];
+    SW=savedIds.map(id=>AW.find(w=>w.id===id)).filter(Boolean);
+  }
   if(!SW.length){alert('🎉 今日任務已完成！明天再來。');return;}
   dailyWordIds=new Set(SW.map(w=>w.id));
   const todayDp=dp[todayKey]||dp[today];
