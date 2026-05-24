@@ -3659,9 +3659,44 @@ async function showStudentDetail(u){
   delBtn.onclick=async()=>{if(!confirm('確定刪除「'+(u.name||u.id)+'」的所有學習記錄？'))return;await delOne('users',u.id);window.showStudentList();window.renderStudentList();};
   detail.appendChild(delBtn);
 
-  // upgrade/downgrade management
+  // ── admin: reset today's corrupted daily progress ──────────
   const acct=await getOne('accounts',u.id);
   const stuClasses=acct?.classes||[];
+  const todayForReset=todayStr();
+  // build all possible today keys for this student's classes
+  const todayKeys=[todayForReset,...stuClasses.map(cid=>cid+'_'+todayForReset)];
+  const dpForReset=u.daily_progress||{};
+  const hasCorruptToday=todayKeys.some(k=>dpForReset[k]?.quizDone&&!(dpForReset[k]?.finalPct)&&(dpForReset[k]?.totalWords||0)>0);
+  const hasTodayProgress=todayKeys.some(k=>dpForReset[k]);
+  if(hasTodayProgress){
+    const resetDpBtn=document.createElement('button');
+    resetDpBtn.className='btn btn-sm mb12';
+    resetDpBtn.style.cssText=`width:100%;color:${hasCorruptToday?'var(--danger)':'#92400e'};border-color:${hasCorruptToday?'var(--danger)':'#d97706'};background:${hasCorruptToday?'#fff1f2':'#fffbeb'}`;
+    resetDpBtn.innerHTML=hasCorruptToday?'⚠️ 修復今日測驗（偵測到異常，點此重置）':'🔄 重置今日測驗進度';
+    resetDpBtn.onclick=async()=>{
+      if(!confirm(`重置「${u.name||u.id}」今日（${todayForReset}）的測驗進度？\n學習（背誦）記錄不受影響，只清除測驗狀態。`))return;
+      resetDpBtn.disabled=true;resetDpBtn.textContent='處理中...';
+      try{
+        const freshDp={...(u.daily_progress||{})};
+        todayKeys.forEach(k=>{
+          if(freshDp[k]){
+            freshDp[k].quizDone=false;
+            freshDp[k].quizStarted=false;
+            freshDp[k].answeredIds=[];
+            freshDp[k].quizScore=0;
+            freshDp[k].quizCorrect=0;
+            delete freshDp[k].finalPct;
+            delete freshDp[k].retries;
+          }
+        });
+        await updateOne('users',u.id,{daily_progress:freshDp});
+        resetDpBtn.style.color='var(--success)';resetDpBtn.style.borderColor='var(--success)';resetDpBtn.style.background='var(--sl)';
+        resetDpBtn.textContent='✅ 已重置，學生重新整理頁面即可測驗';
+      }catch(e){resetDpBtn.disabled=false;resetDpBtn.textContent='❌ 失敗：'+e.message;}
+    };
+    detail.appendChild(resetDpBtn);
+  }
+  // upgrade/downgrade management
   if(stuClasses.length>0){
     const upgradeDiv=document.createElement('div');upgradeDiv.className='card mb12';
     let upgradeHTML='<div class="bold text-sm mb8">🎓 升降級管理</div>';
