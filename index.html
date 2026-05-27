@@ -745,7 +745,7 @@ async function showSC(){
   document.getElementById('flip-card').classList.remove('flipped');
   const enEl=document.getElementById('study-en');
   renderSyllableWord(w.en, enEl, '28px');
-  document.getElementById('study-pos').textContent=(w.phonetic?'['+w.phonetic+'] ':''+(w.pos||''));
+  document.getElementById('study-pos').textContent=(w.phonetic?'['+w.phonetic+'] ':'')+( w.pos||'');
   document.getElementById('study-zh').textContent=w.zh;
   const exEl=document.getElementById('study-ex');
   const exBtn=document.getElementById('speak-ex-btn');
@@ -1234,6 +1234,13 @@ function splitSyllables(word){
     'communication':'com-mu-ni-ca-tion','imagination':'i-mag-i-na-tion',
     'particular':'par-tic-u-lar','familiar':'fa-mil-iar',
     'classmate':'class-mate','homework':'home-work','birthday':'birth-day',
+    'complain':'com-plain','classroom':'class-room','alphabet':'al-pha-bet',
+    'although':'al-though','answer':'an-swer','apply':'ap-ply',
+    'improve':'im-prove','surprise':'sur-prise','translate':'trans-late',
+    'understand':'un-der-stand','supply':'sup-ply','employ':'em-ploy',
+    'destroy':'de-stroy','display':'dis-play',
+    'explain':'ex-plain','explore':'ex-plore','express':'ex-press',
+    'extreme':'ex-treme','exclude':'ex-clude','exchange':'ex-change',
     'everything':'ev-ery-thing','somewhere':'some-where','anywhere':'any-where',
     'every':'ev-ery',
     // -age family
@@ -1391,7 +1398,20 @@ function splitSyllables(word){
     return parts;
   }
 
-  const parts = splitCore(w);
+  let parts = splitCore(w);
+
+  // Lossless guarantee: if parts don't reconstruct original, append missing tail
+  const rebuilt = parts.join('');
+  if(rebuilt !== w){
+    if(w.startsWith(rebuilt)){
+      const leftover = w.slice(rebuilt.length);
+      if(parts.length > 0) parts[parts.length-1] += leftover;
+      else parts = [w];
+    } else {
+      parts = [w]; // complex mismatch: fall back to whole word
+    }
+  }
+
   // Restore original casing
   let pos = 0;
   return parts.map(p => { const orig = word.slice(pos, pos + p.length); pos += p.length; return orig || p; });
@@ -1399,7 +1419,14 @@ function splitSyllables(word){
 function getSyllables(word){
   const key = word.toLowerCase().trim();
   if(!syllableCache[key]){
-    syllableCache[key] = splitSyllables(word);
+    const parts = splitSyllables(word);
+    // Safety check: parts must reconstruct to original word
+    const rebuilt = parts.join('');
+    if(rebuilt.toLowerCase() !== key){
+      syllableCache[key] = [word]; // fallback: no coloring, no data loss
+    } else {
+      syllableCache[key] = parts;
+    }
   }
   return syllableCache[key];
 }
@@ -1422,7 +1449,9 @@ function syllableHTML(parts, fontSize){
 function renderSyllableWord(word, el, fontSize){
   if(!word){ el.textContent=''; return; }
   const parts = getSyllables(word);
-  if(parts.length <= 1){ el.textContent = word; return; }
+  if(parts.length <= 1 || parts.join('').toLowerCase() !== word.toLowerCase()){
+    el.textContent = word; return;
+  }
   el.innerHTML = syllableHTML(parts, fontSize);
 }
 function initSpeech(){
