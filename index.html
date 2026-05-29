@@ -1576,7 +1576,7 @@ window.startDaily=function(){
   const todayDpCheck=dp[todayKey]||dp[today];
   // Detect corrupt state: quizDone=true but finalPct is missing/0 and totalWords>0
   // This happens when quiz was marked done without actually completing (e.g. empty-SW bug)
-  if(todayDpCheck?.quizDone&&!todayDpCheck?.finalPct&&(todayDpCheck?.totalWords||0)>0){
+  if(todayDpCheck?.quizDone&&todayDpCheck?.finalPct===undefined&&(todayDpCheck?.totalWords||0)>0){
     // Reset quizDone so student can redo the quiz
     if(dp[todayKey]){dp[todayKey].quizDone=false;dp[todayKey].quizStarted=false;dp[todayKey].answeredIds=[];}
     u.daily_progress=dp; updateOne('users',CU.id,{daily_progress:dp});
