@@ -611,7 +611,7 @@ function renderMultiClassTasks() {
     AC=prevAC; AW=prevAW; APP_SETTINGS=prevSettings;
     let statusHTML='', btnText='開始 →', btnAction=`startDailyForClass('${cid}')`;
     if(todayDp?.quizDone){
-      statusHTML=`<div style="font-size:11px;opacity:0.75;margin-top:2px">今日已完成 🎉 · ${todayDp.finalPct||0}%</div>`;
+      statusHTML=`<div style="font-size:11px;opacity:0.75;margin-top:2px">今日已完成 🎉 · ${todayDp.finalPct!==undefined?todayDp.finalPct:(todayDp.totalWords?Math.round((todayDp.quizCorrect||0)/todayDp.totalWords*100):100)}%</div>`;
       btnText='已完成 ✓';
       btnAction='';
     } else if(daily.length===0){
@@ -1605,7 +1605,16 @@ window.startDaily=function(){
     // treat as finished and mark quizDone now
     if(!dailyQuizWords.length){
       const dp2={...(u.daily_progress||{})};
-      if(dp2[todayKey]){dp2[todayKey].quizDone=true;u.daily_progress=dp2;updateOne('users',CU.id,{daily_progress:dp2});}
+      if(dp2[todayKey]){
+        dp2[todayKey].quizDone=true;
+        // Calculate finalPct from saved quiz stats if not already set
+        if(dp2[todayKey].finalPct===undefined){
+          const tw=dp2[todayKey].totalWords||SW.length;
+          const qc=dp2[todayKey].quizCorrect||0;
+          dp2[todayKey].finalPct=tw>0?Math.round(qc/tw*100):100;
+        }
+        u.daily_progress=dp2;updateOne('users',CU.id,{daily_progress:dp2});
+      }
       alert('🎉 今日任務已完成！明天再來。');return;
     }
     _enterStudyTabWithQuiz();
