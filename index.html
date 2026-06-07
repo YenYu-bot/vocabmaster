@@ -277,32 +277,6 @@ async function selectClass(cid) {
   }));
   // also cache current class
   CLASS_DATA_CACHE[cid] = { AC, AW, settings: APP_SETTINGS };
-
-  // ── Auto-repair completed_courses on login ──────────────────
-  // Re-scan all class caches to fill in any courses missed due to
-  // network errors mid-quiz or other interruptions
-  {
-    const u = CU_DATA;
-    const known = u.known || {};
-    const comp = [...(u.completed_courses || [])];
-    let changed = false;
-    Object.values(CLASS_DATA_CACHE).forEach(cd => {
-      cd.AC.forEach(c => {
-        if (comp.includes(c.id)) return;
-        const ws = cd.AW.filter(w => w.cid === c.id);
-        if (ws.length && ws.every(w => known[w.id])) {
-          comp.push(c.id);
-          changed = true;
-        }
-      });
-    });
-    if (changed) {
-      u.completed_courses = comp;
-      updateOne('users', CU.id, { completed_courses: comp });
-    }
-  }
-  // ────────────────────────────────────────────────────────────
-
   document.getElementById('stu-name').textContent = CU.name;
   document.getElementById('stu-id').textContent = CU.id;
   document.getElementById('stu-class').textContent = CURRENT_CLASS.level + ' ' + CURRENT_CLASS.grade;
@@ -1785,9 +1759,9 @@ function showDailyQuestion(){
 }
 window.submitDailyFill=function(){
   const input=document.getElementById('dq-fill');if(!input||input.disabled)return;
-  const ans=input.value.trim();if(!ans)return;
+  const ans=input.value.trim().replace(/\s+/g,' ');if(!ans)return;
   const w=dailyQuizWords[dailyQI];
-  const correct=ans.toLowerCase()===w.en.toLowerCase();
+  const correct=ans.toLowerCase()===w.en.toLowerCase().replace(/\s+/g,' ');
   input.disabled=true;
   document.querySelectorAll('#dq-options button').forEach(b=>b.disabled=true);
   const res=document.getElementById('dq-fill-result'); res.style.display='block';
@@ -1973,8 +1947,8 @@ function showQ(){
 }
 window.submitFill=function(){
   const input=document.getElementById('fill-input');if(!input||input.disabled)return;
-  const ans=input.value.trim();if(!ans)return;
-  const w=QW[QI];const correct=ans.toLowerCase()===w.en.toLowerCase();
+  const ans=input.value.trim().replace(/\s+/g,' ');if(!ans)return;
+  const w=QW[QI];const correct=ans.toLowerCase()===w.en.toLowerCase().replace(/\s+/g,' ');
   if(QW[QI]) QW[QI]._correct=correct; // track for notebook suggestion
   input.disabled=true;document.querySelectorAll('#q-options button').forEach(b=>b.disabled=true);
   const res=document.getElementById('fill-result');res.style.display='block';
