@@ -300,7 +300,7 @@ async function selectClass(cid) {
         return false;
       }).sort((a,b)=>(a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0));
       const otherAW = ws.filter(w=>otherAC.some(c=>c.id===w.cid)).sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
-      const settings = sDoc ? { newWordsPerDay: sDoc.newWordsPerDay||20, startDate: sDoc.startDate||todayStr(), dailyLimit: sDoc.dailyLimit||20 } : { newWordsPerDay:20, startDate:todayStr(), dailyLimit:20 };
+      const settings = sDoc ? { newWordsPerDay: sDoc.newWordsPerDay||20, startDate: sDoc.startDate||todayStr(), dailyLimit: sDoc.dailyLimit||20, reviewCap: sDoc.reviewCap||0, quizCount: sDoc.quizCount||0 } : { newWordsPerDay:20, startDate:todayStr(), dailyLimit:20, reviewCap:0, quizCount:0 };
       settings.todayPlan = pDoc||null;
       CLASS_DATA_CACHE[otherId] = { AC: otherAC, AW: otherAW, settings };
     }
@@ -354,7 +354,7 @@ async function loadAllForClass(cid) {
   }).sort((a,b) => (a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0));
   AW = ws.filter(w => AC.some(c=>c.id===w.cid)).sort((a,b)=>(a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0));
   if (settingsDoc) {
-    APP_SETTINGS = { dailyLimit: settingsDoc.dailyLimit||20, newWordsPerDay: settingsDoc.newWordsPerDay||20, startDate: settingsDoc.startDate||todayStr() };
+    APP_SETTINGS = { dailyLimit: settingsDoc.dailyLimit||20, newWordsPerDay: settingsDoc.newWordsPerDay||20, startDate: settingsDoc.startDate||todayStr(), reviewCap: settingsDoc.reviewCap||0, quizCount: settingsDoc.quizCount||0 };
     if (!settingsDoc.startDate) setOne('class_settings', cid, { ...settingsDoc, startDate: todayStr() });
   } else {
     const init = { dailyLimit:20, newWordsPerDay:20, startDate:todayStr() };
@@ -439,12 +439,20 @@ function getDailyWords() {
   const today=todayStr();
   const newIds=getStudentTodayNewWordIds();
   const newWords=newIds.map(id=>AW.find(w=>w.id===id)).filter(Boolean);
-  const reviewWords=[];
+  let reviewWords=[];
   AC.forEach(c=>AW.filter(w=>w.cid===c.id).forEach(w=>{
     const srEntry=getSR(w.id);
-    if(srEntry&&srEntry.nextDate<=today&&!newIds.includes(w.id)) reviewWords.push(w);
+    if(srEntry&&srEntry.nextDate<=today&&!newIds.includes(w.id)) reviewWords.push({w,nextDate:srEntry.nextDate,level:srEntry.level||0});
   }));
-  return [...newWords,...reviewWords];
+  // Sort review by urgency: earliest due date first, then most-fragile (lowest level) first
+  reviewWords.sort((a,b)=>{
+    if(a.nextDate!==b.nextDate) return a.nextDate<b.nextDate?-1:1;
+    return (a.level||0)-(b.level||0);
+  });
+  // Apply daily review cap (0 = unlimited); overflow naturally carries to next day
+  const cap=APP_SETTINGS.reviewCap||0;
+  if(cap>0 && reviewWords.length>cap) reviewWords=reviewWords.slice(0,cap);
+  return [...newWords,...reviewWords.map(r=>r.w)];
 }
 
 // ── student tabs ──────────────────────────────────────────────
@@ -614,7 +622,44 @@ async function refreshHome() {
   document.getElementById('h-rank').textContent='#'+(ri+1);
   // render per-class daily tasks
   renderMultiClassTasks();
-  renderCL(); renderMissedTasks();
+  renderCL(); renderMissedTasks(); renderReviewSchedule();
+}
+
+function renderReviewSchedule(){
+  const el=document.getElementById('review-schedule-section');
+  if(!el)return;
+  const u=CU_DATA; const sr=u.sr||{};
+  const today=todayStr();
+  // Count words by their next review date bucket
+  const buckets={overdue:0, today:0, tomorrow:0, week:0, later:0, mastered:0};
+  const tomorrow=new Date(Date.now()+8*3600000+86400000).toISOString().slice(0,10);
+  const weekLater=new Date(Date.now()+8*3600000+7*86400000).toISOString().slice(0,10);
+  Object.keys(sr).forEach(key=>{
+    const e=sr[key]; if(!e||!e.nextDate)return;
+    if((e.level||0)>=SR_INTERVALS.length-1 && e.nextDate>weekLater){ buckets.mastered++; return; }
+    if(e.nextDate<today) buckets.overdue++;
+    else if(e.nextDate===today) buckets.today++;
+    else if(e.nextDate===tomorrow) buckets.tomorrow++;
+    else if(e.nextDate<=weekLater) buckets.week++;
+    else buckets.later++;
+  });
+  const totalSR=Object.keys(sr).length;
+  if(totalSR===0){ el.innerHTML=''; return; }
+  const dueNow=buckets.overdue+buckets.today;
+  const cap=APP_SETTINGS.reviewCap||0;
+  const cappedToday=(cap>0&&dueNow>cap)?cap:dueNow;
+  const deferred=dueNow-cappedToday;
+  el.innerHTML=`
+    <h3>🧠 複習排程（艾賓浩斯記憶法）</h3>
+    <div class="card mb12">
+      ${dueNow>0
+        ? `<div style="background:var(--wl);border-radius:8px;padding:10px 12px;margin-bottom:10px"><span style="color:var(--warn);font-weight:600;font-size:14px">⏰ 今天要複習 ${cappedToday} 個字</span><div class="text-muted" style="font-size:12px;margin-top:2px">${deferred>0?`另有 ${deferred} 個順延後續幾天（避免一次太多）。`:'已融入今日任務，完成即可複習。'}</div></div>`
+        : `<div style="background:var(--sl);border-radius:8px;padding:10px 12px;margin-bottom:10px"><span style="color:var(--success);font-weight:600;font-size:14px">✓ 今天沒有待複習的字</span></div>`}
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        ${[['⏰ 待複習',dueNow,'var(--warn)'],['📅 明天',buckets.tomorrow,'var(--brand)'],['📆 本週',buckets.week,'var(--brand)'],['🗓️ 之後',buckets.later,'var(--muted)'],['🏆 已熟練',buckets.mastered,'var(--success)']].map(([label,n,color])=>`<div style="flex:1;min-width:56px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px;text-align:center"><div class="text-muted" style="font-size:10px">${label}</div><div style="font-size:18px;font-weight:700;color:${color};margin-top:2px">${n}</div></div>`).join('')}
+      </div>
+      <div class="text-muted" style="font-size:11px;margin-top:8px;line-height:1.5">💡 答對的字會依 ${SR_INTERVALS.join('、')} 天間隔安排複習；答錯則重新計算。間隔越拉越長，記得越牢。</div>
+    </div>`;
 }
 
 function renderMultiClassTasks() {
@@ -641,7 +686,7 @@ function renderMultiClassTasks() {
     AC=prevAC; AW=prevAW; APP_SETTINGS=prevSettings;
     let statusHTML='', btnText='開始 →', btnAction=`startDailyForClass('${cid}')`;
     if(todayDp?.quizDone){
-      statusHTML=`<div style="font-size:11px;opacity:0.75;margin-top:2px">今日已完成 🎉 · ${todayDp.finalPct||0}%</div>`;
+      statusHTML=`<div style="font-size:11px;opacity:0.75;margin-top:2px">今日已完成 🎉 · ${todayDp.finalPct!==undefined?todayDp.finalPct:(todayDp.totalWords?Math.round((todayDp.quizCorrect||0)/todayDp.totalWords*100):100)}%</div>`;
       btnText='已完成 ✓';
       btnAction='';
     } else if(daily.length===0){
@@ -2552,7 +2597,10 @@ async function renderRank(){
     return;
   }
   list.innerHTML='<div class="loading">載入中...</div>';
-  let allUsers=(await getAll('users')).filter(u=>u.role!=='admin');
+  const allUsersRaw = window._cachedUsers && Date.now()-window._cachedUsersTime<60000
+    ? window._cachedUsers
+    : await getAll('users').then(r=>{ window._cachedUsers=r; window._cachedUsersTime=Date.now(); return r; });
+  let allUsers=allUsersRaw.filter(u=>u.role!=='admin');
   // filter by class if class mode
   if(rankMode==='class'){
     const myClasses=new Set(CU.classes||[]);
@@ -2651,7 +2699,7 @@ window.adminTab=function(t,el){
   });
   if(t==='accounts')renderAccountList();
   if(t==='classes')renderClassList();
-  if(t==='words'){renderWords();updateFC();}
+  if(t==='words'){ if(window._wordSelection)window._wordSelection.clear(); renderWords();updateFC();}
   if(t==='courses')renderAdminCourses();
   if(t==='import')updateIC();
   if(t==='students'){
@@ -3452,47 +3500,111 @@ function prefetchSyllables(words){
   return Promise.resolve();
 }
 
+window._wordGroupCollapsed = window._wordGroupCollapsed || {};
+window._wordSelection = window._wordSelection || new Set(); // persistent selection across collapse/expand
+window.toggleWordGroup=function(cid){
+  const cur = window._wordGroupCollapsed[cid] !== false;
+  window._wordGroupCollapsed[cid] = !cur;
+  renderWords();
+};
+window._lastFilteredWords = []; // words currently matching filter (for select-all)
 window.renderWords=function(){
   const q=(document.getElementById('search-word')?.value||'').toLowerCase();
   const fc=document.getElementById('filter-course')?.value||'';
   const list=document.getElementById('word-list');list.innerHTML='';
   const f=AW.filter(w=>(!q||w.en.toLowerCase().includes(q)||w.zh.includes(q))&&(!fc||w.cid===fc));
-  if(!f.length){list.innerHTML='<p class="text-muted text-sm" style="padding:10px 0">無符合單字</p>';return;}
-  // pre-warm syllable cache (local, instant)
+  window._lastFilteredWords = f;
+  if(!f.length){list.innerHTML='<p class="text-muted text-sm" style="padding:10px 0">無符合單字</p>';updateBatchBar();return;}
   prefetchSyllables(f.map(w=>w.en));
-  f.forEach(w=>{
-    const c=AC.find(x=>x.id===w.cid);
-    const row=document.createElement('div');row.style.cssText='display:flex;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid var(--border)';
-    const enSpan=document.createElement('span');enSpan.className='bold text-sm';enSpan.textContent=w.en;
-    row.innerHTML=`<input type="checkbox" class="word-cb" data-id="${w.id}" style="width:16px;height:16px;flex-shrink:0;cursor:pointer;accent-color:var(--brand)" onchange="updateBatchBar()"/>
-      <div style="flex:1">
-        <div class="flex gap8" style="align-items:center">
-          <span class="en-word bold text-sm" data-word="${w.en.replace(/"/g,'&quot;')}">${w.en}</span>
-          <span class="tag tag-a" style="font-size:11px">${w.pos||''}</span>
-        </div>
-        <div class="text-muted" style="font-size:12px">${w.zh}${c?' · '+c.name:''}</div>
-      </div>
-      <button class="btn btn-sm" style="flex-shrink:0" onclick="editWord('${w.id}')">編輯</button>
-      <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger);flex-shrink:0" onclick="deleteWord('${w.id}')">刪除</button>`;
-    list.appendChild(row);
-    // syllable coloring (local, instant)
-    const sp=row.querySelector('.en-word');
-    const parts=getSyllables(w.en);
-    if(parts.length>1) sp.innerHTML=syllableHTML(parts,'14px');
+  const sel=window._wordSelection;
+  // Group words by course
+  const groups=new Map();
+  f.forEach(w=>{ if(!groups.has(w.cid))groups.set(w.cid,[]); groups.get(w.cid).push(w); });
+  const orderedCids=AC.map(c=>c.id).filter(cid=>groups.has(cid));
+  groups.forEach((_,cid)=>{ if(!orderedCids.includes(cid))orderedCids.push(cid); });
+  const forceExpand = !!q || !!fc;
+
+  orderedCids.forEach(cid=>{
+    const ws=groups.get(cid);
+    const c=AC.find(x=>x.id===cid);
+    const cname=c?c.name:'(未分類)';
+    const collapsed = forceExpand ? false : (window._wordGroupCollapsed[cid] !== false);
+    const groupSelCount = ws.filter(w=>sel.has(w.id)).length;
+    const allSel = groupSelCount===ws.length && ws.length>0;
+    const someSel = groupSelCount>0 && !allSel;
+    const header=document.createElement('div');
+    header.style.cssText='display:flex;align-items:center;gap:8px;padding:10px 8px;background:var(--bg);border-radius:8px;margin-top:8px;cursor:pointer;border:1px solid var(--border)';
+    header.onclick=(e)=>{ if(e.target.classList.contains('grp-cb'))return; toggleWordGroup(cid); };
+    const cb=document.createElement('input');cb.type='checkbox';cb.className='grp-cb';cb.checked=allSel;cb.indeterminate=someSel;cb.dataset.cid=cid;
+    cb.style.cssText='width:16px;height:16px;flex-shrink:0;cursor:pointer;accent-color:var(--brand)';
+    cb.onclick=(e)=>{e.stopPropagation();toggleGroupSelect(cid,cb.checked);};
+    header.appendChild(cb);
+    const rest=document.createElement('div');rest.style.cssText='display:flex;align-items:center;gap:8px;flex:1';
+    rest.innerHTML=`<span style="flex-shrink:0;font-size:13px;color:var(--muted);transition:transform .15s;transform:rotate(${collapsed?'0':'90'}deg)">▸</span>
+      <span class="bold text-sm" style="flex:1">${cname}</span>
+      <span class="text-muted" style="font-size:12px">${groupSelCount>0?groupSelCount+'/':''}${ws.length} 字</span>`;
+    header.appendChild(rest);
+    list.appendChild(header);
+    if(collapsed)return;
+    ws.forEach(w=>{
+      const row=document.createElement('div');row.style.cssText='display:flex;align-items:center;gap:8px;padding:9px 0 9px 24px;border-bottom:1px solid var(--border)';
+      const wcb=document.createElement('input');wcb.type='checkbox';wcb.className='word-cb';wcb.checked=sel.has(w.id);
+      wcb.dataset.id=w.id;wcb.dataset.cid=w.cid;
+      wcb.style.cssText='width:16px;height:16px;flex-shrink:0;cursor:pointer;accent-color:var(--brand)';
+      wcb.onchange=()=>{ if(wcb.checked)sel.add(w.id);else sel.delete(w.id); updateBatchBar(); updateGroupHeaderCount(cid); };
+      row.appendChild(wcb);
+      const body=document.createElement('div');body.style.cssText='flex:1';
+      body.innerHTML=`<div class="flex gap8" style="align-items:center"><span class="en-word bold text-sm" data-word="${w.en.replace(/"/g,'&quot;')}">${w.en}</span><span class="tag tag-a" style="font-size:11px">${w.pos||''}</span></div><div class="text-muted" style="font-size:12px">${w.zh}</div>`;
+      row.appendChild(body);
+      const editBtn=document.createElement('button');editBtn.className='btn btn-sm';editBtn.style.flexShrink='0';editBtn.textContent='編輯';editBtn.onclick=()=>editWord(w.id);
+      const delBtn=document.createElement('button');delBtn.className='btn btn-sm';delBtn.style.cssText='color:var(--danger);border-color:var(--danger);flex-shrink:0';delBtn.textContent='刪除';delBtn.onclick=()=>deleteWord(w.id);
+      row.appendChild(editBtn);row.appendChild(delBtn);
+      list.appendChild(row);
+      const sp=row.querySelector('.en-word');
+      const parts=getSyllables(w.en);
+      if(parts.length>1) sp.innerHTML=syllableHTML(parts,'14px');
+    });
   });
+  updateBatchBar();
+};
+function updateGroupHeaderCount(cid){
+  // Update the group header checkbox state + count label inline (no full re-render)
+  const ws=(window._lastFilteredWords||[]).filter(w=>w.cid===cid);
+  const sel=window._wordSelection;
+  const count=ws.filter(w=>sel.has(w.id)).length;
+  const allSel=count===ws.length&&ws.length>0;
+  const grpCb=document.querySelector(`.grp-cb[data-cid="${cid}"]`);
+  if(grpCb){ grpCb.checked=allSel; grpCb.indeterminate=count>0&&!allSel; }
+}
+window.expandAllGroups=function(expand){
+  AC.forEach(c=>{ window._wordGroupCollapsed[c.id]=expand?false:true; });
+  renderWords();
+};
+window.toggleGroupSelect=function(cid,checked){
+  const sel=window._wordSelection;
+  const ws=(window._lastFilteredWords||[]).filter(w=>w.cid===cid);
+  ws.forEach(w=>{ if(checked)sel.add(w.id);else sel.delete(w.id); });
+  renderWords();
 };
 window.updateBatchBar=function(){
-  const checked=document.querySelectorAll('.word-cb:checked');
-  const total=document.querySelectorAll('.word-cb');
+  const sel=window._wordSelection;
+  const total=(window._lastFilteredWords||[]).length;
+  const count=sel.size;
   const bar=document.getElementById('batch-bar');
   const allCb=document.getElementById('select-all-cb');
   if(!bar)return;
-  bar.style.display=checked.length>0?'flex':'none';
-  if(checked.length>0)document.getElementById('batch-count').textContent='已選 '+checked.length+' 個';
-  if(allCb){allCb.indeterminate=checked.length>0&&checked.length<total.length;allCb.checked=total.length>0&&checked.length===total.length;}
+  bar.style.display=count>0?'flex':'none';
+  if(count>0)document.getElementById('batch-count').textContent='已選 '+count+' 個';
+  if(allCb){allCb.indeterminate=count>0&&count<total;allCb.checked=total>0&&count===total;}
 };
-window.toggleSelectAll=function(cb){document.querySelectorAll('.word-cb').forEach(c=>c.checked=cb.checked);updateBatchBar();};
-window.deleteWord=async function(id){if(!confirm('確定刪除此單字？'))return;await delOne('words',id);AW=AW.filter(w=>w.id!==id);window.renderWords();};
+window.toggleSelectAll=function(cb){
+  const sel=window._wordSelection;
+  const f=window._lastFilteredWords||[];
+  if(cb.checked) f.forEach(w=>sel.add(w.id));
+  else f.forEach(w=>sel.delete(w.id));
+  renderWords();
+};
+window.deleteWord=async function(id){if(!confirm('確定刪除此單字？'))return;await delOne('words',id);AW=AW.filter(w=>w.id!==id);if(window._wordSelection)window._wordSelection.delete(id);window.renderWords();};
 
 window.editWord=function(id){
   const w=AW.find(x=>x.id===id); if(!w) return;
@@ -3534,12 +3646,16 @@ window.saveEditWord=async function(id,btn){
   }catch(e){msg.style.color='var(--danger)';msg.textContent='失敗：'+e.message;}
 };
 window.deleteSelected=async function(){
-  const checked=[...document.querySelectorAll('.word-cb:checked')];
-  if(!checked.length)return;
-  if(!confirm('確定刪除選取的 '+checked.length+' 個單字？'))return;
-  const ids=checked.map(c=>c.dataset.id);
+  const sel=window._wordSelection||new Set();
+  // Safety: only delete ids that exist in current AW (avoid cross-class stale ids)
+  const validIds=new Set(AW.map(w=>w.id));
+  const ids=[...sel].filter(id=>validIds.has(id));
+  if(!ids.length)return;
+  if(!confirm('確定刪除選取的 '+ids.length+' 個單字？'))return;
   await Promise.all(ids.map(id=>delOne('words',id)));
-  AW=AW.filter(w=>!ids.includes(w.id));window.renderWords();
+  AW=AW.filter(w=>!ids.includes(w.id));
+  sel.clear();
+  window.renderWords();
 };
 window.importWords=async function(){
   const cid=document.getElementById('import-course').value;
@@ -4084,6 +4200,11 @@ window.exportGrades=async function(){
   document.body.removeChild(a);URL.revokeObjectURL(url);
 };
 
+let _stuSearchTimer=null;
+window.debouncedStudentSearch=function(){
+  clearTimeout(_stuSearchTimer);
+  _stuSearchTimer=setTimeout(()=>renderStudentList(),250);
+};
 window.renderStudentList=async function(){
   const list=document.getElementById('student-list-view');
   list.innerHTML='<div class="loading">載入中...</div>';
@@ -4095,6 +4216,8 @@ window.renderStudentList=async function(){
   const filterFrom=document.getElementById('filter-date-from')?.value||'';
   const filterTo=document.getElementById('filter-date-to')?.value||today;
   const filterIncomplete=document.getElementById('filter-incomplete')?.checked||false;
+  const filterSearch=(document.getElementById('filter-stu-search')?.value||'').toLowerCase().trim();
+  const filterSort=document.getElementById('filter-stu-sort')?.value||'score';
   // 依選擇的班級計算今日單字（若未選擇班級，用第一個有指派的班）
   const targetCid = filterClass || (CU.assignedClasses?.[0]) || CURRENT_CLASS?.id || '';
   // 若 CLASS_DATA_CACHE 沒有該班，先載入
@@ -4138,24 +4261,66 @@ window.renderStudentList=async function(){
     const inAssigned=new Set(accounts.filter(a=>(a.classes||[]).some(c=>assignedClassesView.includes(c))).map(a=>a.id));
     allUsers=allUsers.filter(u=>inAssigned.has(u.id));
   }
+  // Populate class dropdown with only classes that actually have students
+  {
+    const classSel=document.getElementById('filter-stu-class');
+    if(classSel){
+      const activeClasses=new Set();
+      accounts.forEach(a=>(a.classes||[]).forEach(c=>{
+        if(isSuperAdminView||assignedClassesView.includes(c)) activeClasses.add(c);
+      }));
+      const sorted=[...activeClasses].sort();
+      const cur=classSel.value;
+      if(classSel.options.length<=1 || classSel.dataset.count!=String(sorted.length)){
+        classSel.innerHTML='<option value="">所有班級</option>'+sorted.map(cid=>{
+          const cls=ALL_CLASSES.find(c=>c.id===cid);
+          const label=cls?`${cls.level} ${cls.grade}`:cid;
+          const count=accounts.filter(a=>(a.classes||[]).includes(cid)).length;
+          return `<option value="${cid}">${label}（${count}人）</option>`;
+        }).join('');
+        classSel.dataset.count=String(sorted.length);
+        if(cur)classSel.value=cur;
+      }
+    }
+  }
   if(filterClass){
     const inClass=new Set(accounts.filter(a=>(a.classes||[]).includes(filterClass)).map(a=>a.id));
     allUsers=allUsers.filter(u=>inClass.has(u.id));
   }
-  // filter by incomplete in date range
-  if(filterIncomplete&&filterFrom){
+  // filter by incomplete
+  if(filterIncomplete){
+    if(filterFrom){
+      // date-range mode
+      allUsers=allUsers.filter(u=>{
+        const dp=u.daily_progress||{};
+        let d=new Date(filterFrom); const toD=new Date(filterTo);
+        while(d<=toD){
+          const ds=d.toISOString().slice(0,10);
+          if(!dp[ds]?.quizDone) return true;
+          d.setDate(d.getDate()+1);
+        }
+        return false;
+      });
+    } else {
+      // today-only mode (uses getStuDp defined below via inline check)
+      allUsers=allUsers.filter(u=>{
+        const dp=u.daily_progress||{};
+        const acct=accounts.find(a=>a.id===u.id);
+        const classes=acct?.classes||[];
+        let done=dp[today]?.quizDone;
+        for(const cid of classes){ if(dp[cid+'_'+today]?.quizDone) done=true; }
+        return !done;
+      });
+    }
+  }
+  // Search filter (name or id)
+  if(filterSearch){
     allUsers=allUsers.filter(u=>{
-      const dp=u.daily_progress||{};
-      let d=new Date(filterFrom); const toD=new Date(filterTo);
-      while(d<=toD){
-        const ds=d.toISOString().slice(0,10);
-        if(!dp[ds]?.quizDone) return true;
-        d.setDate(d.getDate()+1);
-      }
-      return false;
+      const nm=(u.name||'').toLowerCase();
+      const id=(u.id||'').toLowerCase();
+      return nm.includes(filterSearch)||id.includes(filterSearch);
     });
   }
-  allUsers.sort((a,b)=>b.score-a.score);
   const totalStu=allUsers.length;
   // Helper: get best daily progress for a user on a date (checks all class-specific keys + date-only)
   const getStuDp=(u,ds)=>{
@@ -4173,6 +4338,18 @@ window.renderStudentList=async function(){
   };
   const doneTodayStu=allUsers.filter(u=>getStuDp(u,today)?.quizDone).length;
   const studyDoneStu=allUsers.filter(u=>getStuDp(u,today)?.studyDone&&!getStuDp(u,today)?.quizDone).length;
+  // Apply sort
+  if(filterSort==='name'){
+    allUsers.sort((a,b)=>(a.name||a.id).localeCompare(b.name||b.id,'zh-Hant'));
+  } else if(filterSort==='progress'){
+    allUsers.sort((a,b)=>(b.completed_courses||[]).length-(a.completed_courses||[]).length);
+  } else if(filterSort==='today'){
+    // done > studying > not started; within group by score
+    const rank=u=>{const d=getStuDp(u,today);if(d?.quizDone)return 2;if(d?.studyDone||d?.doneIds?.length)return 1;return 0;};
+    allUsers.sort((a,b)=>{const r=rank(b)-rank(a);return r!==0?r:(b.score||0)-(a.score||0);});
+  } else {
+    allUsers.sort((a,b)=>(b.score||0)-(a.score||0));
+  }
   const all=allUsers;
   list.innerHTML='';
   const summaryEl=document.createElement('div');summaryEl.className='card mb12';
@@ -4209,12 +4386,19 @@ async function showStudentDetail(u){
   detail.style.display='block';detail.innerHTML='';
   const known=u.known||{};const comp=u.completed_courses||[];const sr=u.sr||{};const dp=u.daily_progress||{};const qs=u.quiz_stats||{};const today=todayStr();
   const delBtn=document.createElement('button');delBtn.className='btn btn-sm mb12';delBtn.style.cssText='color:var(--danger);border-color:var(--danger);width:100%';delBtn.textContent='🗑 刪除此學生所有資料';
-  delBtn.onclick=async()=>{if(!confirm('確定刪除「'+(u.name||u.id)+'」的所有學習記錄？'))return;await delOne('users',u.id);window.showStudentList();window.renderStudentList();};
+  delBtn.onclick=async()=>{if(!confirm('確定刪除「'+(u.name||u.id)+'」的所有學習記錄？'))return;await delOne('users',u.id);window._cachedUsers=null;window.showStudentList();window.renderStudentList();};
   detail.appendChild(delBtn);
 
   // ── admin: reset today's corrupted daily progress ──────────
   const acct=await getOne('accounts',u.id);
   const stuClasses=acct?.classes||[];
+  // Filter courses to only those belonging to this student's classes (hide unrelated courses)
+  const stuAC = stuClasses.length
+    ? AC.filter(c => Array.isArray(c.classIds)
+        ? c.classIds.some(cid => stuClasses.includes(cid))
+        : stuClasses.includes(c.classId))
+    : AC;
+  const stuAW = AW.filter(w => stuAC.some(c => c.id === w.cid));
   const todayForReset=todayStr();
   // build all possible today keys for this student's classes
   const todayKeys=[todayForReset,...stuClasses.map(cid=>cid+'_'+todayForReset)];
@@ -4310,18 +4494,18 @@ async function showStudentDetail(u){
   const totalCorrect=Object.values(qs).reduce((s,v)=>s+(v.correct||0),0);
   const quizPct=totalAttempts?Math.round(totalCorrect/totalAttempts*100):0;
   const topEl=document.createElement('div');topEl.className='mb12';topEl.style.cssText='display:grid;grid-template-columns:repeat(2,1fr);gap:8px';
-  topEl.innerHTML=`<div class="stat-card"><div class="stat-label">總積分</div><div class="stat-num" style="color:var(--brand)">${u.score||0}</div></div><div class="stat-card"><div class="stat-label">已學單字</div><div class="stat-num">${Object.keys(known).length} / ${AW.length}</div></div><div class="stat-card"><div class="stat-label">測驗總答題</div><div class="stat-num">${totalAttempts}</div></div><div class="stat-card"><div class="stat-label">測驗正確率</div><div class="stat-num" style="color:${quizPct>=70?'var(--success)':'var(--warn)'}">${totalAttempts?quizPct+'%':'—'}</div></div>`;
+  topEl.innerHTML=`<div class="stat-card"><div class="stat-label">總積分</div><div class="stat-num" style="color:var(--brand)">${u.score||0}</div></div><div class="stat-card"><div class="stat-label">已學單字</div><div class="stat-num">${stuAW.filter(w=>known[w.id]).length} / ${stuAW.length}</div></div><div class="stat-card"><div class="stat-label">測驗總答題</div><div class="stat-num">${totalAttempts}</div></div><div class="stat-card"><div class="stat-label">測驗正確率</div><div class="stat-num" style="color:${quizPct>=70?'var(--success)':'var(--warn)'}">${totalAttempts?quizPct+'%':'—'}</div></div>`;
   detail.appendChild(topEl);
 
   // ── 課程完成總覽（一眼看完成哪些課）──────────────────────
   {
     const compList = Array.isArray(comp) ? comp : [];
-    const totalCourses = AC.length;
-    const doneCourses = AC.filter(c => compList.includes(c.id)).length;
+    const totalCourses = stuAC.length;
+    const doneCourses = stuAC.filter(c => compList.includes(c.id)).length;
     const overviewEl = document.createElement('div');
     overviewEl.className = 'card mb12';
-    const courseChips = AC.map(c => {
-      const ws = AW.filter(w => w.cid === c.id);
+    const courseChips = stuAC.map(c => {
+      const ws = stuAW.filter(w => w.cid === c.id);
       const learned = ws.filter(w => known[w.id]).length;
       const isComp = compList.includes(c.id);
       const pct = ws.length ? Math.round(learned/ws.length*100) : 0;
@@ -4463,9 +4647,21 @@ async function showStudentDetail(u){
     detail.appendChild(incEl);
   }
 
-  const srLevels=[0,0,0,0,0];Object.keys(sr).forEach(wid=>{srLevels[Math.min(sr[wid]?.level||0,4)]++;});
+  const srLevels=[0,0,0,0,0];
+  let dueNowCount=0;
+  const todayDs=todayStr();
+  Object.keys(sr).forEach(wid=>{
+    srLevels[Math.min(sr[wid]?.level||0,4)]++;
+    if(sr[wid]?.nextDate&&sr[wid].nextDate<=todayDs) dueNowCount++;
+  });
   const srEl=document.createElement('div');srEl.className='card mb12';
-  srEl.innerHTML=`<div class="bold text-sm mb8">🧠 遺忘曲線進度（共 ${Object.keys(sr).length} 個單字進入複習）</div><div style="display:flex;gap:6px;flex-wrap:wrap">${['初學','第2次','第3次','第4次','熟練'].map((label,i)=>`<div style="flex:1;min-width:52px;background:var(--bg);border-radius:8px;padding:8px;text-align:center;border:1px solid var(--border)"><div class="text-muted" style="font-size:10px">${label}</div><div style="font-size:18px;font-weight:700;color:var(--brand);margin-top:2px">${srLevels[i]}</div></div>`).join('')}</div>`;
+  const intervalLabels=['初學','第2次','第3次','第4次','熟練'];
+  srEl.innerHTML=`<div class="flex gap8 mb8" style="align-items:center;justify-content:space-between">
+      <span class="bold text-sm">🧠 遺忘曲線進度</span>
+      <span class="text-muted" style="font-size:12px">${Object.keys(sr).length} 字複習中${dueNowCount>0?` · <span style="color:var(--warn);font-weight:600">${dueNowCount} 待複習</span>`:''}</span>
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap">${intervalLabels.map((label,i)=>`<div style="flex:1;min-width:52px;background:var(--bg);border-radius:8px;padding:8px;text-align:center;border:1px solid var(--border)"><div class="text-muted" style="font-size:10px">${label}</div><div style="font-size:18px;font-weight:700;color:var(--brand);margin-top:2px">${srLevels[i]}</div><div style="font-size:9px;color:var(--muted);margin-top:1px">${i<SR_INTERVALS.length?'+'+SR_INTERVALS[i]+'天':''}</div></div>`).join('')}</div>
+    <div class="text-muted" style="font-size:11px;margin-top:8px">答對升級、間隔拉長（${SR_INTERVALS.join('/')} 天）；答錯則退回初學重來。階段越右代表記得越牢。</div>`;
   detail.appendChild(srEl);
   // notebook section
   const nbWords=(u.notebook||[]).map(wid=>AW.find(w=>w.id===wid)).filter(Boolean);
@@ -4481,8 +4677,8 @@ async function showStudentDetail(u){
   const courseEl=document.createElement('div');courseEl.className='card';
   const cdId='cd-'+Math.random().toString(36).slice(2,8);
   let courseHTML=`<div class="flex gap8 mb8" style="align-items:center;cursor:pointer;justify-content:space-between" onclick="(function(el){var b=el.parentElement.querySelector('#${cdId}');b.style.display=b.style.display==='none'?'block':'none';el.querySelector('.cd-arrow').textContent=b.style.display==='none'?'▸':'▾';})(this)"><span class="bold text-sm">📚 課程單字詳情（逐字）</span><span class="cd-arrow text-muted">▸</span></div><div id="${cdId}" style="display:none">`;
-  if(!AC.length){courseHTML+='<p class="text-muted text-sm">尚無課程</p>';}
-  else{AC.forEach(c=>{const ws=AW.filter(w=>w.cid===c.id);const done=ws.filter(w=>known[w.id]).length;const pct=ws.length?Math.round(done/ws.length*100):0;const isComp=comp.includes?.(c.id)||false;courseHTML+=`<div style="padding:10px 0;border-bottom:1px solid var(--border)"><div class="flex gap8 mb8"><span class="bold text-sm">${c.name}</span><span class="tag ${isComp?'tag-g':'tag-a'}" style="font-size:11px">${isComp?'✓ 完成':'進行中'}</span><span class="text-muted" style="font-size:12px;margin-left:auto">${done}/${ws.length} (${pct}%)</span></div><div class="progress-bar mb8"><div class="progress-fill" style="width:${pct}%"></div></div><div style="display:flex;flex-wrap:wrap;gap:4px">${ws.map(w=>{const isKnown=!!known[w.id];const wqs=qs[w.id];const srLv=sr[w.id]?.level;let bg,color;if(!isKnown){bg='#f1f5f9';color='#94a3b8';}else if(srLv>=4){bg='var(--sl)';color='var(--success)';}else if(srLv>=2){bg='var(--brand-l)';color='var(--brand-d)';}else{bg='var(--wl)';color='var(--warn)';}const acc=wqs&&wqs.attempts?Math.round(wqs.correct/wqs.attempts*100)+'%':'';return`<div title="${w.en}${wqs?' (答題'+wqs.attempts+'次 正確'+wqs.correct+'次)':''}" style="background:${bg};color:${color};border-radius:4px;padding:3px 7px;font-size:11px;font-weight:500;cursor:default">${w.en}${acc?'<span style="opacity:0.7;font-size:10px"> '+acc+'</span>':''}</div>`;}).join('')}</div></div>`;});}
+  if(!stuAC.length){courseHTML+='<p class="text-muted text-sm">尚無課程</p>';}
+  else{stuAC.forEach(c=>{const ws=stuAW.filter(w=>w.cid===c.id);const done=ws.filter(w=>known[w.id]).length;const pct=ws.length?Math.round(done/ws.length*100):0;const isComp=comp.includes?.(c.id)||false;courseHTML+=`<div style="padding:10px 0;border-bottom:1px solid var(--border)"><div class="flex gap8 mb8"><span class="bold text-sm">${c.name}</span><span class="tag ${isComp?'tag-g':'tag-a'}" style="font-size:11px">${isComp?'✓ 完成':'進行中'}</span><span class="text-muted" style="font-size:12px;margin-left:auto">${done}/${ws.length} (${pct}%)</span></div><div class="progress-bar mb8"><div class="progress-fill" style="width:${pct}%"></div></div><div style="display:flex;flex-wrap:wrap;gap:4px">${ws.map(w=>{const isKnown=!!known[w.id];const wqs=qs[w.id];const srLv=sr[w.id]?.level;let bg,color;if(!isKnown){bg='#f1f5f9';color='#94a3b8';}else if(srLv>=4){bg='var(--sl)';color='var(--success)';}else if(srLv>=2){bg='var(--brand-l)';color='var(--brand-d)';}else{bg='var(--wl)';color='var(--warn)';}const acc=wqs&&wqs.attempts?Math.round(wqs.correct/wqs.attempts*100)+'%':'';return`<div title="${w.en}${wqs?' (答題'+wqs.attempts+'次 正確'+wqs.correct+'次)':''}" style="background:${bg};color:${color};border-radius:4px;padding:3px 7px;font-size:11px;font-weight:500;cursor:default">${w.en}${acc?'<span style="opacity:0.7;font-size:10px"> '+acc+'</span>':''}</div>`;}).join('')}</div></div>`;});}
   courseHTML+='</div>';
   courseEl.innerHTML=courseHTML;detail.appendChild(courseEl);
 }
@@ -4496,15 +4692,17 @@ window.loadSettings=async function(){
   const qc=document.getElementById('setting-quiz-count');
   const uc=document.getElementById('setting-upgrade-completion');
   const ua=document.getElementById('setting-upgrade-accuracy');
+  const rc=document.getElementById('setting-review-cap');
   if(s){
     if(sel)sel.value=s.newWordsPerDay||20;
     if(sd)sd.value=s.startDate||todayStr();
     if(qc)qc.value=s.quizCount||0;
     if(uc)uc.value=s.upgradeCompletion||0;
     if(ua)ua.value=s.upgradeAccuracy||0;
+    if(rc)rc.value=s.reviewCap||0;
   } else {
     if(sel)sel.value=20;if(sd)sd.value=todayStr();
-    if(qc)qc.value=0;if(uc)uc.value=0;if(ua)ua.value=0;
+    if(qc)qc.value=0;if(uc)uc.value=0;if(ua)ua.value=0;if(rc)rc.value=0;
   }
   const dayIdx=Math.max(0,Math.floor((new Date(todayStr())-new Date(APP_SETTINGS.startDate||todayStr()))/86400000));
   const perDay=APP_SETTINGS.newWordsPerDay||20;
@@ -4518,11 +4716,12 @@ window.saveSettings=async function(){
   const quizCount=parseInt(document.getElementById('setting-quiz-count')?.value||'0');
   const upgradeCompletion=parseInt(document.getElementById('setting-upgrade-completion')?.value||'0');
   const upgradeAccuracy=parseInt(document.getElementById('setting-upgrade-accuracy')?.value||'0');
+  const reviewCap=parseInt(document.getElementById('setting-review-cap')?.value||'0');
   const cid=CURRENT_CLASS?.id||'global';
-  const settingsData={newWordsPerDay:perDay,startDate,dailyLimit:perDay,quizCount,upgradeCompletion,upgradeAccuracy};
+  const settingsData={newWordsPerDay:perDay,startDate,dailyLimit:perDay,quizCount,upgradeCompletion,upgradeAccuracy,reviewCap};
   await setOne('class_settings',cid,settingsData);
   APP_SETTINGS.newWordsPerDay=perDay;APP_SETTINGS.dailyLimit=perDay;APP_SETTINGS.startDate=startDate;
-  APP_SETTINGS.quizCount=quizCount;APP_SETTINGS.upgradeCompletion=upgradeCompletion;APP_SETTINGS.upgradeAccuracy=upgradeAccuracy;
+  APP_SETTINGS.quizCount=quizCount;APP_SETTINGS.upgradeCompletion=upgradeCompletion;APP_SETTINGS.upgradeAccuracy=upgradeAccuracy;APP_SETTINGS.reviewCap=reviewCap;
   const msg=document.getElementById('settings-msg');msg.style.color='var(--success)';msg.textContent='✓ 設定已儲存！';
   setTimeout(()=>{msg.textContent='';renderTodayPlanPreview();},1500);
 };
@@ -4692,6 +4891,7 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
       </div>
       <div id="missed-tasks-list"></div>
     </div>
+    <div id="review-schedule-section"></div>
     <h3>課程進度</h3>
     <div class="card" id="course-list"><div class="loading">載入中...</div></div>
   </div>
@@ -4921,6 +5121,8 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
     <div class="flex gap8 mb8" style="align-items:center">
       <input type="checkbox" id="select-all-cb" style="width:16px;height:16px;cursor:pointer;accent-color:var(--brand)" onchange="toggleSelectAll(this)"/>
       <span class="text-muted text-sm">全選</span>
+      <button class="btn btn-sm" style="margin-left:auto" onclick="expandAllGroups(true)">全部展開</button>
+      <button class="btn btn-sm" onclick="expandAllGroups(false)">全部收合</button>
     </div>
     <div id="batch-bar" style="display:none;align-items:center;justify-content:space-between;background:var(--dl);border-radius:8px;padding:8px 12px;margin-bottom:8px">
       <span style="font-size:13px;color:var(--danger);font-weight:500" id="batch-count">已選 0 個</span>
@@ -4969,33 +5171,29 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
       <button class="btn btn-sm" onclick="exportGrades()">📥 匯出成績 CSV</button>
     </div>
     <div id="stu-filter-bar" class="card mb12">
-      <div class="bold text-sm mb8">篩選條件</div>
-      <label>班級篩選</label>
-      <select id="filter-stu-class" class="mb8">
-        <option value="">所有學生</option>
-        <optgroup label="國小">
-          <option value="國小-D級">國小 D級</option><option value="國小-C級">國小 C級</option>
-          <option value="國小-B級">國小 B級</option><option value="國小-A級">國小 A級</option>
-          <option value="國小-S級">國小 S級</option>
-        </optgroup>
-        <optgroup label="國中">
-          <option value="國中-國一">國中 國一</option><option value="國中-國二">國中 國二</option>
-          <option value="國中-國三">國中 國三</option>
-        </optgroup>
-        <optgroup label="高中">
-          <option value="高中-高一">高中 高一</option><option value="高中-高二">高中 高二</option>
-          <option value="高中-高三">高中 高三</option>
-        </optgroup>
-      </select>
-      <label class="flex gap8" style="align-items:center;cursor:pointer">
-        <input type="checkbox" id="filter-incomplete" style="width:16px;height:16px;accent-color:var(--brand);margin-bottom:0"/>
-        <span>只顯示有未完成進度的學生</span>
-      </label>
-      <div class="flex gap8 mt8">
-        <div style="flex:1"><label>起始日期</label><input type="date" id="filter-date-from" class="mb0"/></div>
-        <div style="flex:1"><label>結束日期</label><input type="date" id="filter-date-to" class="mb0"/></div>
+      <input id="filter-stu-search" class="mb8" placeholder="🔍 搜尋學生姓名或帳號..." oninput="debouncedStudentSearch()" style="width:100%"/>
+      <div class="flex gap8 mb8">
+        <select id="filter-stu-class" class="mb0" style="flex:1" onchange="renderStudentList()">
+          <option value="">所有班級</option>
+        </select>
+        <select id="filter-stu-sort" class="mb0" style="flex:1" onchange="renderStudentList()">
+          <option value="score">依積分排序</option>
+          <option value="name">依姓名排序</option>
+          <option value="progress">依完成課數</option>
+          <option value="today">依今日狀態</option>
+        </select>
       </div>
-      <button class="btn btn-p mt8" style="width:100%" onclick="renderStudentList()">套用篩選</button>
+      <label class="flex gap8" style="align-items:center;cursor:pointer;margin-bottom:0">
+        <input type="checkbox" id="filter-incomplete" style="width:16px;height:16px;accent-color:var(--brand);margin-bottom:0" onchange="renderStudentList()"/>
+        <span class="text-sm">只顯示今日未完成的學生</span>
+      </label>
+      <details style="margin-top:8px">
+        <summary style="cursor:pointer;font-size:13px;color:var(--muted)">📅 日期範圍篩選（進階）</summary>
+        <div class="flex gap8 mt8">
+          <div style="flex:1"><label>起始日期</label><input type="date" id="filter-date-from" class="mb0" onchange="renderStudentList()"/></div>
+          <div style="flex:1"><label>結束日期</label><input type="date" id="filter-date-to" class="mb0" onchange="renderStudentList()"/></div>
+        </div>
+      </details>
     </div>
     <div id="student-list-view"><div class="loading">載入中...</div></div>
     <div id="student-detail-view" style="display:none"></div>
@@ -5061,6 +5259,15 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
         <option value="40">固定 40 題</option>
         <option value="50">固定 50 題</option>
       </select>
+      <label>每日複習單字上限（艾賓浩斯到期字）</label>
+      <select id="setting-review-cap" class="mb8">
+        <option value="0">不限制（全部複習）</option>
+        <option value="10">最多 10 個</option>
+        <option value="20">最多 20 個</option>
+        <option value="30">最多 30 個</option>
+        <option value="50">最多 50 個</option>
+      </select>
+      <div class="text-muted mb12" style="font-size:12px">複習字超過上限時，優先複習「最久沒複習、最快遺忘」的字，其餘順延到明天。避免某天暴增到 200 字。</div>
       <label>課程起始日期</label>
       <input type="date" id="setting-start-date" class="mb8"/>
       <div id="settings-day-info" class="notice notice-i" style="font-size:12px;margin-bottom:12px"></div>
