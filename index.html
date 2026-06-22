@@ -300,7 +300,7 @@ async function selectClass(cid) {
         return false;
       }).sort((a,b)=>(a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0));
       const otherAW = ws.filter(w=>otherAC.some(c=>c.id===w.cid)).sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
-      const settings = sDoc ? { newWordsPerDay: sDoc.newWordsPerDay||20, startDate: sDoc.startDate||todayStr(), dailyLimit: sDoc.dailyLimit||20, reviewCap: sDoc.reviewCap||0, quizCount: sDoc.quizCount||0 } : { newWordsPerDay:20, startDate:todayStr(), dailyLimit:20, reviewCap:0, quizCount:0 };
+      const settings = sDoc ? { newWordsPerDay: sDoc.newWordsPerDay||20, startDate: sDoc.startDate||todayStr(), dailyLimit: sDoc.dailyLimit||20, reviewCap: (sDoc.reviewCap===undefined?20:sDoc.reviewCap), quizCount: sDoc.quizCount||0 } : { newWordsPerDay:20, startDate:todayStr(), dailyLimit:20, reviewCap:20, quizCount:0 };
       settings.todayPlan = pDoc||null;
       CLASS_DATA_CACHE[otherId] = { AC: otherAC, AW: otherAW, settings };
     }
@@ -354,10 +354,10 @@ async function loadAllForClass(cid) {
   }).sort((a,b) => (a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0));
   AW = ws.filter(w => AC.some(c=>c.id===w.cid)).sort((a,b)=>(a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0));
   if (settingsDoc) {
-    APP_SETTINGS = { dailyLimit: settingsDoc.dailyLimit||20, newWordsPerDay: settingsDoc.newWordsPerDay||20, startDate: settingsDoc.startDate||todayStr(), reviewCap: settingsDoc.reviewCap||0, quizCount: settingsDoc.quizCount||0 };
+    APP_SETTINGS = { dailyLimit: settingsDoc.dailyLimit||20, newWordsPerDay: settingsDoc.newWordsPerDay||20, startDate: settingsDoc.startDate||todayStr(), reviewCap: (settingsDoc.reviewCap===undefined?20:settingsDoc.reviewCap), quizCount: settingsDoc.quizCount||0 };
     if (!settingsDoc.startDate) setOne('class_settings', cid, { ...settingsDoc, startDate: todayStr() });
   } else {
-    const init = { dailyLimit:20, newWordsPerDay:20, startDate:todayStr() };
+    const init = { dailyLimit:20, newWordsPerDay:20, startDate:todayStr(), reviewCap:20 };
     setOne('class_settings', cid, init);
     APP_SETTINGS = init;
   }
@@ -440,6 +440,8 @@ function getSR(wid) {
   const classKey=cid?cid+'_'+wid:wid;
   return sr[classKey]||sr[wid]||null;
 }
+// Daily task = new words + reviews due EXACTLY today.
+// Reviews overdue (nextDate < today) go to a separate "補複習" area, not daily tasks.
 function getDailyWords() {
   const today=todayStr();
   const newIds=getStudentTodayNewWordIds();
@@ -447,17 +449,34 @@ function getDailyWords() {
   let reviewWords=[];
   AC.forEach(c=>AW.filter(w=>w.cid===c.id).forEach(w=>{
     const srEntry=getSR(w.id);
-    if(srEntry&&srEntry.nextDate<=today&&!newIds.includes(w.id)) reviewWords.push({w,nextDate:srEntry.nextDate,level:srEntry.level||0});
+    // Only reviews due exactly today count toward the daily task
+    if(srEntry&&srEntry.nextDate===today&&!newIds.includes(w.id)){
+      reviewWords.push({w,nextDate:srEntry.nextDate,level:srEntry.level||0});
+    }
   }));
-  // Sort review by urgency: earliest due date first, then most-fragile (lowest level) first
-  reviewWords.sort((a,b)=>{
-    if(a.nextDate!==b.nextDate) return a.nextDate<b.nextDate?-1:1;
-    return (a.level||0)-(b.level||0);
-  });
-  // Apply daily review cap (0 = unlimited); overflow naturally carries to next day
+  reviewWords.sort((a,b)=>(a.level||0)-(b.level||0));
   const cap=APP_SETTINGS.reviewCap||0;
   if(cap>0 && reviewWords.length>cap) reviewWords=reviewWords.slice(0,cap);
   return [...newWords,...reviewWords.map(r=>r.w)];
+}
+
+// Overdue reviews (nextDate < today) — shown in a separate makeup-review area,
+// NOT added to daily progress. Sorted most-overdue first.
+function getOverdueReviewWords() {
+  const today=todayStr();
+  const newIds=getStudentTodayNewWordIds();
+  let overdue=[];
+  AC.forEach(c=>AW.filter(w=>w.cid===c.id).forEach(w=>{
+    const srEntry=getSR(w.id);
+    if(srEntry&&srEntry.nextDate&&srEntry.nextDate<today&&!newIds.includes(w.id)){
+      overdue.push({w,nextDate:srEntry.nextDate,level:srEntry.level||0});
+    }
+  }));
+  overdue.sort((a,b)=>{
+    if(a.nextDate!==b.nextDate) return a.nextDate<b.nextDate?-1:1;
+    return (a.level||0)-(b.level||0);
+  });
+  return overdue.map(r=>r.w);
 }
 
 // ── student tabs ──────────────────────────────────────────────
@@ -627,7 +646,7 @@ async function refreshHome() {
   document.getElementById('h-rank').textContent='#'+(ri+1);
   // render per-class daily tasks
   renderMultiClassTasks();
-  renderCL(); renderMissedTasks(); renderReviewSchedule();
+  renderCL(); renderMissedTasks(); renderReviewSchedule(); renderOverdueReviews();
 }
 
 function renderReviewSchedule(){
@@ -636,21 +655,25 @@ function renderReviewSchedule(){
   const u=CU_DATA; const sr=u.sr||{};
   const today=todayStr();
   // Count words by their next review date bucket
-  const buckets={overdue:0, today:0, tomorrow:0, week:0, later:0, mastered:0};
+  const buckets={dueGrace:0, tomorrow:0, week:0, later:0, mastered:0, oldBacklog:0};
   const tomorrow=new Date(Date.now()+8*3600000+86400000).toISOString().slice(0,10);
   const weekLater=new Date(Date.now()+8*3600000+7*86400000).toISOString().slice(0,10);
+  const graceCutoff=new Date(Date.now()+8*3600000);graceCutoff.setDate(graceCutoff.getDate()-7);
+  const graceStr=graceCutoff.toISOString().slice(0,10);
   Object.keys(sr).forEach(key=>{
     const e=sr[key]; if(!e||!e.nextDate)return;
     if((e.level||0)>=SR_INTERVALS.length-1 && e.nextDate>weekLater){ buckets.mastered++; return; }
-    if(e.nextDate<today) buckets.overdue++;
-    else if(e.nextDate===today) buckets.today++;
+    if(e.nextDate<=today){
+      if(e.nextDate>=graceStr) buckets.dueGrace++;   // within grace = student will actually review
+      else buckets.oldBacklog++;                      // too old = not forced
+    }
     else if(e.nextDate===tomorrow) buckets.tomorrow++;
     else if(e.nextDate<=weekLater) buckets.week++;
     else buckets.later++;
   });
   const totalSR=Object.keys(sr).length;
   if(totalSR===0){ el.innerHTML=''; return; }
-  const dueNow=buckets.overdue+buckets.today;
+  const dueNow=buckets.dueGrace;
   const cap=APP_SETTINGS.reviewCap||0;
   const cappedToday=(cap>0&&dueNow>cap)?cap:dueNow;
   const deferred=dueNow-cappedToday;
@@ -666,6 +689,68 @@ function renderReviewSchedule(){
       <div class="text-muted" style="font-size:11px;margin-top:8px;line-height:1.5">💡 答對的字會依 ${SR_INTERVALS.join('、')} 天間隔安排複習；答錯則重新計算。間隔越拉越長，記得越牢。</div>
     </div>`;
 }
+
+function renderOverdueReviews(){
+  const el=document.getElementById('overdue-review-section');
+  if(!el)return;
+  const u=CU_DATA;
+  const allClassIds=CU.classes||[];
+  // Gather overdue reviews per class (uses each class's AC/AW context)
+  let totalOverdue=0;
+  const perClass=[];
+  const prevAC=AC, prevAW=AW, prevSettings=APP_SETTINGS, prevCC=CURRENT_CLASS;
+  allClassIds.forEach(cid=>{
+    const cls=ALL_CLASSES.find(c=>c.id===cid);
+    const cd=CLASS_DATA_CACHE[cid];
+    if(!cls||!cd)return;
+    AC=cd.AC; AW=cd.AW; APP_SETTINGS=cd.settings; CURRENT_CLASS=cls;
+    const overdue=getOverdueReviewWords();
+    if(overdue.length>0){
+      perClass.push({cid,label:cls.level+' '+cls.grade,count:overdue.length});
+      totalOverdue+=overdue.length;
+    }
+  });
+  AC=prevAC; AW=prevAW; APP_SETTINGS=prevSettings; CURRENT_CLASS=prevCC;
+
+  if(totalOverdue===0){ el.innerHTML=''; return; }
+  const cap=APP_SETTINGS.reviewCap||20;
+  el.innerHTML=`
+    <h3>⏳ 待補複習</h3>
+    <div class="card mb12" style="border-left:3px solid var(--warn)">
+      <div class="flex gap8 mb8" style="align-items:center;justify-content:space-between">
+        <span class="bold text-sm" style="color:var(--warn)">有 ${totalOverdue} 個字逾期未複習</span>
+        <span class="tag tag-a">不計入每日</span>
+      </div>
+      <div class="text-muted" style="font-size:12px;margin-bottom:10px">這些是之前該複習但沒做的字。它們不會卡住你的每日任務，有空時再來補。每次補複習一樣以 ${cap} 個為上限。</div>
+      ${perClass.map(pc=>`
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:var(--bg);border-radius:8px;margin-bottom:8px">
+          <div><div class="bold text-sm">${pc.label}</div><div class="text-muted" style="font-size:12px">${pc.count} 個待補</div></div>
+          <button class="btn btn-p btn-sm" onclick="startOverdueReview('${pc.cid}')">補複習 →</button>
+        </div>`).join('')}
+    </div>`;
+}
+
+window.startOverdueReview=function(cid){
+  const cd=CLASS_DATA_CACHE[cid];
+  if(!cd)return;
+  CURRENT_CLASS=ALL_CLASSES.find(c=>c.id===cid);
+  AC=cd.AC; AW=cd.AW; APP_SETTINGS=cd.settings;
+  window.currentTaskClassId=cid;
+  // Get overdue words, apply cap
+  let overdueWords=getOverdueReviewWords();
+  if(!overdueWords.length){ alert('沒有待補複習的字了！'); refreshHome(); return; }
+  const cap=APP_SETTINGS.reviewCap||20;
+  if(cap>0 && overdueWords.length>cap) overdueWords=overdueWords.slice(0,cap);
+  // Set up as a review-only session (no new words, separate from daily)
+  makeupDate=null; dailyMode=true; battleMode=false;
+  window._overdueReviewMode=true; // flag: this is a makeup-review, not the daily task
+  SW=overdueWords;
+  dailyWordIds=new Set(SW.map(w=>w.id));
+  dailyPhase='study'; window._dailyForgot=new Set(); wrongWords=[]; dailyRetryCount=0; dailyCorrectIds=[];
+  dailyQI=0;dailyQS=0;dailyQC=0;
+  SI=0;
+  _enterStudyTabWithQuiz();
+};
 
 function renderMultiClassTasks() {
   const u=CU_DATA; const today=todayStr(); const dp=u.daily_progress||{};
@@ -1587,6 +1672,8 @@ window.flipCard=function(){document.getElementById('flip-card').classList.toggle
 window.studyNav=function(d){
   const next=SI+d;
   if(dailyMode&&dailyPhase==='study'&&next>=SW.length){
+    // Overdue makeup-review: skip daily_progress writes, go straight to quiz
+    if(window._overdueReviewMode){ startDailyQuiz(); return; }
     const u=CU_DATA; const today=makeupDate||todayStr();
     const studyKey=makeupDate?makeupDate:dpKey(today);
     const dp={...(u.daily_progress||{})};
@@ -1663,7 +1750,7 @@ window.startDaily=function(){
     // fall through to restart quiz below
   }
   if(dp[todayKey]?.quizDone||(dp[today]?.quizDone&&!CURRENT_CLASS?.id)){alert('🎉 今日任務已全部完成！明天再來。');return;}
-  makeupDate=null; dailyMode=true;
+  makeupDate=null; dailyMode=true; window._overdueReviewMode=false;
   SW=getDailyWords();
   // Bug fix: if studyDone but getDailyWords() returns empty (SR dates already updated),
   // restore SW from the saved doneIds snapshot so quiz can proceed
@@ -2374,12 +2461,37 @@ async function finishDailyTask(){
   if(!totalWords){console.warn('finishDailyTask called with empty SW, aborting');return;}
   const pct=Math.round(dailyQC/totalWords*100);
   // Battle mode: clearing all stages = automatic pass (HP-based difficulty already filters)
-  const passed=battleMode?true:(pct>=PASS_THRESHOLD*100);
+  const passed=(battleMode||window._overdueReviewMode)?true:(pct>=PASS_THRESHOLD*100);
   if(!passed){
     dailyRetryCount++;
     const wrongList=wrongWords.map(wid=>AW.find(w=>w.id===wid)).filter(Boolean);
     document.getElementById('t-study').innerHTML=`<div style="padding:24px 4px"><div style="text-align:center;margin-bottom:16px"><div style="font-size:52px;margin-bottom:8px">😅</div><h2 style="margin-bottom:6px;color:var(--danger)">未達標！請重新測驗</h2><div class="text-muted" style="font-size:13px">需達 90%，本次 ${pct}%</div></div><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px"><div class="stat-card"><div class="stat-label">總題數</div><div class="stat-num">${totalWords}</div></div><div class="stat-card"><div class="stat-label">正確率</div><div class="stat-num" style="color:var(--danger)">${pct}%</div></div><div class="stat-card"><div class="stat-label">第${dailyRetryCount}次</div><div class="stat-num" style="color:var(--warn)">${wrongList.length}錯</div></div></div><div style="text-align:left;margin-bottom:16px"><div class="bold text-sm mb8" style="color:var(--danger)">❌ 答錯的單字</div>${wrongList.map(w=>`<div style="display:flex;justify-content:space-between;padding:7px 10px;background:var(--dl);border-radius:6px;margin-bottom:5px;font-size:13px"><span style="font-weight:600;color:var(--danger)">${w.en}</span><span>${w.zh}</span></div>`).join('')}</div><button class="btn btn-p" style="width:100%" onclick="retryDailyQuiz()">🔄 重新測驗（全部 ${totalWords} 題）</button></div>`; return;
   }
+  // ── Overdue makeup-review mode: update SR/score but DO NOT touch daily_progress ──
+  if(window._overdueReviewMode){
+    const sr={...(u.sr||{})};
+    const forgot=window._dailyForgot||new Set();
+    const srCid=CURRENT_CLASS?.id||'';
+    SW.forEach(w=>{
+      const srKey=srCid?srCid+'_'+w.id:w.id;
+      const cur=sr[srKey]||sr[w.id]||{level:-1};
+      const remembered=!forgot.has(w.id);
+      const newLevel=remembered?Math.min((cur.level<0?0:cur.level)+1,SR_INTERVALS.length-1):0;
+      const days=SR_INTERVALS[newLevel];
+      const next=new Date(Date.now()+8*3600000);next.setDate(next.getDate()+days);
+      sr[srKey]={level:newLevel,nextDate:next.toISOString().slice(0,10)};
+    });
+    u.sr=sr;
+    u.score=(u.score||0)+dailyQS;
+    await updateOne('users',CU.id,{sr,score:u.score});
+    document.getElementById('stu-score').textContent=u.score;
+    window._overdueReviewMode=false;
+    const emoji=pct>=95?'🎉':'👍';
+    document.getElementById('t-study').innerHTML=`<div style="padding:24px 4px"><div style="text-align:center;margin-bottom:16px"><div style="font-size:52px;margin-bottom:8px">${emoji}</div><h2 style="margin-bottom:4px">補複習完成！</h2><div class="text-muted mt8" style="font-size:13px">已更新這 ${totalWords} 個字的複習進度</div></div><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px"><div class="stat-card"><div class="stat-label">複習字數</div><div class="stat-num">${totalWords}</div></div><div class="stat-card"><div class="stat-label">正確率</div><div class="stat-num" style="color:var(--success)">${pct}%</div></div><div class="stat-card"><div class="stat-label">獲得積分</div><div class="stat-num" style="color:var(--brand)">+${dailyQS}</div></div></div><button class="btn btn-p" style="width:100%" onclick="stuTab('home', document.querySelector('#s-student .tab'))">回主頁</button></div>`;
+    return;
+  }
+
+
   const targetDate=makeupDate||today;
   const finishKey=makeupDate?makeupDate:dpKey(today);
   const dp={...(u.daily_progress||{})};
@@ -4704,10 +4816,10 @@ window.loadSettings=async function(){
     if(qc)qc.value=s.quizCount||0;
     if(uc)uc.value=s.upgradeCompletion||0;
     if(ua)ua.value=s.upgradeAccuracy||0;
-    if(rc)rc.value=s.reviewCap||0;
+    if(rc)rc.value=(s.reviewCap===undefined?20:s.reviewCap);
   } else {
     if(sel)sel.value=20;if(sd)sd.value=todayStr();
-    if(qc)qc.value=0;if(uc)uc.value=0;if(ua)ua.value=0;if(rc)rc.value=0;
+    if(qc)qc.value=0;if(uc)uc.value=0;if(ua)ua.value=0;if(rc)rc.value=20;
   }
   const dayIdx=Math.max(0,Math.floor((new Date(todayStr())-new Date(APP_SETTINGS.startDate||todayStr()))/86400000));
   const perDay=APP_SETTINGS.newWordsPerDay||20;
@@ -4721,7 +4833,7 @@ window.saveSettings=async function(){
   const quizCount=parseInt(document.getElementById('setting-quiz-count')?.value||'0');
   const upgradeCompletion=parseInt(document.getElementById('setting-upgrade-completion')?.value||'0');
   const upgradeAccuracy=parseInt(document.getElementById('setting-upgrade-accuracy')?.value||'0');
-  const reviewCap=parseInt(document.getElementById('setting-review-cap')?.value||'0');
+  const reviewCap=parseInt(document.getElementById('setting-review-cap')?.value??'20');
   const cid=CURRENT_CLASS?.id||'global';
   const settingsData={newWordsPerDay:perDay,startDate,dailyLimit:perDay,quizCount,upgradeCompletion,upgradeAccuracy,reviewCap};
   await setOne('class_settings',cid,settingsData);
@@ -4764,16 +4876,21 @@ window.diagnoseStudentLoad=async function(){
     let html=`<div style="background:var(--bg);border-radius:8px;padding:10px 12px;line-height:1.8">`;
     html+=`<div class="bold">${user.name||sid}（${classes.join(', ')||'無班級'}）</div>`;
     html+=`<div>已學單字：${Object.keys(known).length}　SR 複習項目：${Object.keys(sr).length}</div>`;
-    // Count SR by due status
-    let dueToday=0, future=0, noDate=0;
+    // Count SR by due status, split by grace window (matches getDailyWords logic)
+    const graceCutoff=new Date(Date.now()+8*3600000);graceCutoff.setDate(graceCutoff.getDate()-7);
+    const graceStr=graceCutoff.toISOString().slice(0,10);
+    let inGrace=0, oldBacklog=0, future=0, noDate=0;
     const dueDates={};
     Object.keys(sr).forEach(k=>{
       const e=sr[k];
       if(!e||!e.nextDate){noDate++;return;}
-      if(e.nextDate<=today){ dueToday++; dueDates[e.nextDate]=(dueDates[e.nextDate]||0)+1; }
-      else future++;
+      if(e.nextDate<=today){
+        dueDates[e.nextDate]=(dueDates[e.nextDate]||0)+1;
+        if(e.nextDate>=graceStr) inGrace++; else oldBacklog++;
+      } else future++;
     });
-    html+=`<div style="margin-top:6px"><b style="color:${dueToday>50?'var(--danger)':'var(--text)'}">到期待複習：${dueToday}</b>　未到期：${future}　無日期：${noDate}</div>`;
+    html+=`<div style="margin-top:6px"><b style="color:${inGrace>50?'var(--warn)':'var(--success)'}">近 7 天待複習：${inGrace}</b>（學生實際會做的）　未到期：${future}</div>`;
+    html+=`<div style="margin-top:2px;font-size:12px;color:var(--muted)">超過 7 天的舊積欠：${oldBacklog}（已不強迫複習）　無日期：${noDate}</div>`;
     // Show the date distribution of overdue items
     const sortedDates=Object.keys(dueDates).sort();
     if(sortedDates.length){
@@ -4795,7 +4912,12 @@ window.diagnoseStudentLoad=async function(){
     html+=`</div>`;
     // Verdict
     let verdict='';
-    if(dueToday>50) verdict=`<div style="margin-top:8px;color:var(--danger);font-weight:600">⚠️ 主因：有 ${dueToday} 個字同時到期複習。建議設定「每日複習上限」來分散。</div>`;
+    const reviewCapSet = (await getOne('class_settings', classes[0]))?.reviewCap;
+    if(inGrace>50){
+      verdict=`<div style="margin-top:8px;color:var(--warn);font-weight:600">⚠️ 近 7 天有 ${inGrace} 個字待複習，超過合理量。確認「每日複習上限」已設為 20。</div>`;
+    } else {
+      verdict=`<div style="margin-top:8px;color:var(--success);font-weight:600">✓ 學生每天實際面對的複習量正常（受每日上限控制）。</div>`;
+    }
     out.innerHTML=html+verdict;
   }catch(e){
     out.innerHTML='<span style="color:var(--danger)">診斷失敗：'+e.message+'</span>';
@@ -4954,6 +5076,7 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
       <div id="missed-tasks-list"></div>
     </div>
     <div id="review-schedule-section"></div>
+    <div id="overdue-review-section"></div>
     <h3>課程進度</h3>
     <div class="card" id="course-list"><div class="loading">載入中...</div></div>
   </div>
@@ -5323,13 +5446,13 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
       </select>
       <label>每日複習單字上限（艾賓浩斯到期字）</label>
       <select id="setting-review-cap" class="mb8">
-        <option value="0">不限制（全部複習）</option>
         <option value="10">最多 10 個</option>
-        <option value="20">最多 20 個</option>
+        <option value="20">最多 20 個（建議）</option>
         <option value="30">最多 30 個</option>
         <option value="50">最多 50 個</option>
+        <option value="0">不限制（不建議）</option>
       </select>
-      <div class="text-muted mb12" style="font-size:12px">複習字超過上限時，優先複習「最久沒複習、最快遺忘」的字，其餘順延到明天。避免某天暴增到 200 字。</div>
+      <div class="text-muted mb12" style="font-size:12px">複習字超過上限時，優先複習「最久沒複習、最快遺忘」的字，其餘順延。逾期超過 7 天仍排不進的字會自動分散到後續幾天，避免單日暴增到上百個。<b>建議設 20</b>。</div>
       <label>課程起始日期</label>
       <input type="date" id="setting-start-date" class="mb8"/>
       <div id="settings-day-info" class="notice notice-i" style="font-size:12px;margin-bottom:12px"></div>
