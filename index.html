@@ -106,22 +106,47 @@ let battleStageQI = 0;          // 當前關卡題目index
 let battleMonsterHP = 0;        // 當前怪物剩餘HP(即剩餘怪數)
 let battleTotalStages = 0;
 let battleGameOverCount = 0;  // how many times student hit HP zero this task
+// img = filename under the repo's monsters/ folder. If the image is missing,
+// the UI falls back to the emoji automatically. Upload images named to match.
 const BATTLE_MONSTERS = [
-  {name:'史萊姆',hp:1,emoji:'🟢'},{name:'哥布林',hp:1,emoji:'👺'},
-  {name:'骷髏兵',hp:1,emoji:'💀'},{name:'蝙蝠',hp:1,emoji:'🦇'},
-  {name:'毒蜘蛛',hp:1,emoji:'🕷️'},{name:'石像鬼',hp:1,emoji:'🗿'},
-  {name:'半獸人',hp:1,emoji:'👹'},{name:'幽靈',hp:1,emoji:'👻'},
-  {name:'人魚妖',hp:1,emoji:'🧜'},{name:'火元素',hp:1,emoji:'🔥'},
-  {name:'冰巨人',hp:1,emoji:'❄️'},{name:'雷鳥',hp:1,emoji:'⚡'},
-  {name:'暗黑騎士',hp:1,emoji:'🖤'},{name:'惡龍',hp:1,emoji:'🐉'},
-  {name:'魔王',hp:1,emoji:'😈'}
+  {name:'史萊姆',hp:1,emoji:'🟢',img:'slime.png'},{name:'哥布林',hp:1,emoji:'👺',img:'goblin.png'},
+  {name:'骷髏兵',hp:1,emoji:'💀',img:'skeleton.png'},{name:'蝙蝠',hp:1,emoji:'🦇',img:'bat.png'},
+  {name:'毒蜘蛛',hp:1,emoji:'🕷️',img:'spider.png'},{name:'石像鬼',hp:1,emoji:'🗿',img:'gargoyle.png'},
+  {name:'半獸人',hp:1,emoji:'👹',img:'orc.png'},{name:'幽靈',hp:1,emoji:'👻',img:'ghost.png'},
+  {name:'人魚妖',hp:1,emoji:'🧜',img:'mermaid.png'},{name:'火元素',hp:1,emoji:'🔥',img:'fire.png'},
+  {name:'冰巨人',hp:1,emoji:'❄️',img:'ice_giant.png'},{name:'雷鳥',hp:1,emoji:'⚡',img:'thunderbird.png'},
+  {name:'暗黑騎士',hp:1,emoji:'🖤',img:'dark_knight.png'},{name:'惡龍',hp:1,emoji:'🐉',img:'dragon.png'},
+  {name:'魔王',hp:1,emoji:'😈',img:'demon_lord.png'}
 ];
+const MONSTER_IMG_DIR = 'monsters/'; // relative path on GitHub Pages
 function getBattleMonster(stageIdx){
-  // Final stage = Boss (always 魔王/惡龍)
+  // Final stage = Boss (always 魔王)
   if(typeof battleTotalStages==='number' && battleTotalStages>0 && stageIdx===battleTotalStages-1){
-    return {name:'魔王',hp:1,emoji:'😈',isBoss:true};
+    return {name:'魔王',hp:1,emoji:'😈',img:'demon_lord.png',isBoss:true};
   }
   return BATTLE_MONSTERS[stageIdx % BATTLE_MONSTERS.length];
+}
+// Build the monster visual: <img> with emoji fallback on error.
+// On load failure we call _monsterImgFail which replaces the <img> with an
+// emoji <div>, keeping the same id/classes so animations still target it.
+window._monsterImgFail = function(imgEl, emoji, cls){
+  if(!imgEl) return;
+  const div=document.createElement('div');
+  div.id='bt-monster-main';
+  div.className=cls;
+  div.style.fontSize='74px';
+  div.textContent=emoji;
+  imgEl.replaceWith(div);
+};
+function monsterVisualHTML(monster, extraClass){
+  const cls = 'bt-monster-main '+(extraClass||'');
+  if(monster.img){
+    const src = MONSTER_IMG_DIR + monster.img;
+    const emojiJson = JSON.stringify(monster.emoji);
+    const clsJson = JSON.stringify(cls);
+    return `<img id="bt-monster-main" class="${cls}" src="${src}" alt="${monster.name}" onerror="this.onerror=null;_monsterImgFail(this,${emojiJson},${clsJson})"/>`;
+  }
+  return `<div id="bt-monster-main" class="${cls}" style="font-size:74px">${monster.emoji}</div>`;
 }
 // ────────────────────────────────────────────────────────────
 
@@ -2088,65 +2113,82 @@ function renderBattleUI(){
   if(!document.getElementById('bt-anim-style')){
     const st=document.createElement('style');st.id='bt-anim-style';
     st.textContent=`
-      @keyframes bt-hit{0%{transform:scale(1)}25%{transform:scale(1.18) rotate(-8deg)}50%{transform:scale(.9) rotate(4deg)}100%{transform:scale(1) rotate(0)}}
-      @keyframes bt-flash{0%,100%{filter:brightness(1)}40%{filter:brightness(2.2) drop-shadow(0 0 16px #fbbf24)}}
-      @keyframes bt-shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-8px)}40%{transform:translateX(8px)}60%{transform:translateX(-5px)}80%{transform:translateX(5px)}}
-      @keyframes bt-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
-      @keyframes bt-boss-pulse{0%,100%{transform:scale(1);filter:drop-shadow(0 0 4px rgba(220,38,38,.4))}50%{transform:scale(1.06);filter:drop-shadow(0 0 18px #dc2626)}}
-      @keyframes bt-enter{0%{transform:translateX(80px) scale(.5);opacity:0}100%{transform:translateX(0) scale(1);opacity:1}}
-      @keyframes bt-die{0%{transform:scale(1) rotate(0);opacity:1}100%{transform:scale(.3) rotate(40deg) translateY(30px);opacity:0}}
-      @keyframes bt-dmg{0%{transform:translateY(0) scale(.6);opacity:0}30%{transform:translateY(-18px) scale(1.2);opacity:1}100%{transform:translateY(-50px) scale(1);opacity:0}}
+      @keyframes bt-hit{0%{transform:translateX(0) scale(1)}25%{transform:translateX(6px) scale(1.06);filter:brightness(1.8)}50%{transform:translateX(-4px) scale(.96)}100%{transform:translateX(0) scale(1);filter:brightness(1)}}
+      @keyframes bt-flash{0%,100%{opacity:1}25%,75%{opacity:.3}}
+      @keyframes bt-shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-7px)}40%{transform:translateX(7px)}60%{transform:translateX(-4px)}80%{transform:translateX(4px)}}
+      @keyframes bt-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-7px)}}
+      @keyframes bt-boss-pulse{0%,100%{transform:scale(1);filter:drop-shadow(0 0 4px rgba(220,38,38,.4))}50%{transform:scale(1.05);filter:drop-shadow(0 0 16px #dc2626)}}
+      @keyframes bt-enter{0%{transform:translateX(60px) scale(.4);opacity:0}100%{transform:translateX(0) scale(1);opacity:1}}
+      @keyframes bt-die{0%{transform:scale(1) rotate(0);opacity:1;filter:brightness(1)}30%{filter:brightness(3)}100%{transform:scale(.2) rotate(30deg) translateY(40px);opacity:0}}
+      @keyframes bt-dmg{0%{transform:translate(-50%,0) scale(.6);opacity:0}30%{transform:translate(-50%,-20px) scale(1.2);opacity:1}100%{transform:translate(-50%,-54px) scale(1);opacity:0}}
       @keyframes bt-hp-pop{0%{transform:scale(1)}50%{transform:scale(1.4)}100%{transform:scale(1)}}
-      @keyframes bt-combo-in{0%{transform:scale(0) rotate(-15deg);opacity:0}60%{transform:scale(1.3) rotate(5deg)}100%{transform:scale(1) rotate(0);opacity:1}}
+      @keyframes bt-combo-in{0%{transform:scale(0) rotate(-15deg);opacity:0}60%{transform:scale(1.25) rotate(5deg)}100%{transform:scale(1) rotate(0);opacity:1}}
+      @keyframes bt-platform-in{0%{transform:scale(.3);opacity:0}100%{transform:scale(1);opacity:1}}
+      @keyframes bt-cursor{0%,100%{opacity:1}50%{opacity:0}}
       .bt-hit{animation:bt-hit .4s ease-out}
-      .bt-flash{animation:bt-flash .4s ease-out}
+      .bt-flash{animation:bt-flash .4s}
       .bt-shake{animation:bt-shake .4s}
-      .bt-float{animation:bt-float 2.4s ease-in-out infinite}
+      .bt-float{animation:bt-float 2.6s ease-in-out infinite}
       .bt-boss-anim{animation:bt-boss-pulse 1.8s ease-in-out infinite}
-      .bt-enter{animation:bt-enter .4s cubic-bezier(.34,1.56,.64,1)}
-      .bt-die{animation:bt-die .5s ease-in forwards}
+      .bt-enter{animation:bt-enter .45s cubic-bezier(.34,1.56,.64,1)}
+      .bt-die{animation:bt-die .55s ease-in forwards}
 
-      .bt-wrap{display:flex;flex-direction:column;gap:10px;padding-bottom:96px}
-      /* top status bar */
-      .bt-topbar{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:linear-gradient(135deg,#1e293b 0%,#334155 100%);border-radius:12px;color:#fff}
-      .bt-topbar .bt-stage{font-size:12px;font-weight:700;letter-spacing:.5px;opacity:.9}
-      .bt-hp-wrap{display:flex;align-items:center;gap:6px}
-      .bt-hp-hearts{font-size:17px;letter-spacing:2px}
-      .bt-boss-topbar{background:linear-gradient(135deg,#7f1d1d 0%,#dc2626 100%) !important}
-      .bt-exit-btn{background:rgba(255,255,255,.15);border:none;color:#fff;font-size:15px;cursor:pointer;width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;line-height:1}
-      .bt-exit-btn:hover{background:rgba(255,255,255,.3)}
-
-      /* battle arena */
-      .bt-arena{position:relative;background:linear-gradient(180deg,#dbeafe 0%,#bfdbfe 55%,#93c5fd 100%);border-radius:16px;padding:18px 14px 14px;text-align:center;overflow:hidden;min-height:170px;display:flex;flex-direction:column;justify-content:center;box-shadow:inset 0 -20px 30px -20px rgba(30,58,138,.4)}
-      .bt-arena.boss{background:linear-gradient(180deg,#1e1b4b 0%,#4c1d95 50%,#7f1d1d 100%)}
-      .bt-arena::after{content:'';position:absolute;left:0;right:0;bottom:0;height:38px;background:linear-gradient(180deg,transparent,rgba(30,58,138,.18));border-radius:50% 50% 0 0/100% 100% 0 0}
-      /* wave counter pips */
-      .bt-wave{display:flex;justify-content:center;gap:5px;margin-bottom:8px;position:relative;z-index:2}
-      .bt-wave-pip{width:9px;height:9px;border-radius:50%;background:rgba(255,255,255,.45);transition:all .3s;box-shadow:0 1px 2px rgba(0,0,0,.15)}
-      .bt-wave-pip.alive{background:#f59e0b;box-shadow:0 0 6px #f59e0b}
-      .bt-wave-pip.current{transform:scale(1.5);background:#fbbf24;box-shadow:0 0 10px #fbbf24}
-      /* main monster */
-      .bt-monster-main{font-size:74px;line-height:1;position:relative;z-index:2;display:inline-block;filter:drop-shadow(0 6px 8px rgba(0,0,0,.25))}
-      .bt-arena.boss .bt-monster-main{font-size:90px}
-      .bt-monster-name{font-size:15px;font-weight:700;color:#1e3a8a;margin-top:6px;position:relative;z-index:2}
-      .bt-arena.boss .bt-monster-name{color:#fecaca;font-size:17px}
-      /* monster hp bar */
-      .bt-mhp{margin:8px auto 0;max-width:200px;height:12px;background:rgba(0,0,0,.25);border-radius:6px;overflow:hidden;position:relative;z-index:2;border:1px solid rgba(255,255,255,.3)}
-      .bt-mhp-fill{height:100%;background:linear-gradient(90deg,#ef4444,#f59e0b);border-radius:6px;transition:width .4s ease}
-      .bt-mhp-text{font-size:10px;color:#fff;font-weight:700;margin-top:2px;text-shadow:0 1px 2px rgba(0,0,0,.5);position:relative;z-index:2}
-      /* damage number popup */
-      .bt-dmg-num{position:absolute;top:30%;left:50%;transform:translateX(-50%);font-size:28px;font-weight:900;color:#fbbf24;text-shadow:0 2px 4px rgba(0,0,0,.5),0 0 12px #f59e0b;z-index:5;pointer-events:none;animation:bt-dmg .8s ease-out forwards}
+      .bt-wrap{display:flex;flex-direction:column;gap:0;padding-bottom:0;max-width:560px;margin:0 auto}
+      /* ===== battle scene (Pokémon-style) ===== */
+      .bt-scene{position:relative;width:100%;aspect-ratio:4/3;max-height:420px;border-radius:14px 14px 0 0;overflow:hidden;
+        background:linear-gradient(180deg,#aee9ff 0%,#cdf3e0 45%,#bfe89a 75%,#a3d96f 100%)}
+      .bt-scene.boss{background:linear-gradient(180deg,#3b2f63 0%,#5b3a8a 45%,#7a2e4e 78%,#6b1f3a 100%)}
+      /* decorative clouds */
+      .bt-cloud{position:absolute;background:rgba(255,255,255,.7);border-radius:50%;filter:blur(2px)}
+      .bt-scene.boss .bt-cloud{background:rgba(120,90,160,.4)}
+      /* enemy platform top-right */
+      .bt-platform{position:absolute;border-radius:50%;background:radial-gradient(ellipse at center,#8fd36a 0%,#6fb84a 60%,#5a9e3c 100%);box-shadow:0 8px 14px rgba(0,0,0,.12);animation:bt-platform-in .4s ease-out}
+      .bt-scene.boss .bt-platform{background:radial-gradient(ellipse at center,#7a4a9a 0%,#5b3478 60%,#42255a 100%)}
+      .bt-platform-enemy{top:30%;right:6%;width:46%;height:15%}
+      /* enemy monster sprite */
+      .bt-enemy-spot{position:absolute;top:6%;right:14%;width:34%;display:flex;flex-direction:column;align-items:center;z-index:3}
+      .bt-monster-main{width:100%;max-width:150px;height:auto;object-fit:contain;image-rendering:auto;display:block;margin:0 auto;filter:drop-shadow(0 6px 6px rgba(0,0,0,.25))}
+      div.bt-monster-main{font-size:74px;line-height:1;text-align:center}
+      /* ===== enemy nameplate (top-left, like Pokémon) ===== */
+      .bt-nameplate{position:absolute;top:7%;left:4%;z-index:4;background:#f7f7ef;border:3px solid #3a3a3a;border-radius:6px 16px 6px 6px;padding:6px 14px 7px 10px;min-width:160px;box-shadow:2px 2px 0 rgba(0,0,0,.25)}
+      .bt-np-row1{display:flex;align-items:center;justify-content:space-between;gap:8px}
+      .bt-np-name{font-weight:800;font-size:14px;color:#2a2a2a;letter-spacing:.5px}
+      .bt-np-lv{font-size:12px;font-weight:700;color:#2a2a2a}
+      .bt-np-hprow{display:flex;align-items:center;gap:5px;margin-top:3px}
+      .bt-np-hplabel{font-size:9px;font-weight:900;color:#d9a300;font-style:italic}
+      .bt-np-hptrack{flex:1;height:7px;background:#5a5a5a;border-radius:4px;overflow:hidden;border:1px solid #3a3a3a}
+      .bt-np-hpfill{height:100%;width:100%;background:linear-gradient(180deg,#7dE37d,#36c436);transition:width .5s ease,background .3s}
+      .bt-np-hpfill.mid{background:linear-gradient(180deg,#ffd95e,#f5b400)}
+      .bt-np-hpfill.low{background:linear-gradient(180deg,#ff7a7a,#e23434)}
+      .bt-np-count{font-size:10px;color:#555;text-align:right;margin-top:1px;font-weight:700}
+      /* wave pips inside nameplate */
+      .bt-wave{display:flex;gap:3px;margin-top:3px}
+      .bt-wave-pip{width:8px;height:8px;border-radius:2px;background:#cfcfcf;border:1px solid #999}
+      .bt-wave-pip.alive{background:#f59e0b;border-color:#b45309}
+      .bt-wave-pip.current{background:#fbbf24;box-shadow:0 0 5px #fbbf24}
+      /* damage number over enemy */
+      .bt-dmg-num{position:absolute;top:18%;left:50%;font-size:30px;font-weight:900;color:#fff;text-shadow:0 0 8px #f59e0b,0 2px 4px rgba(0,0,0,.6);z-index:6;pointer-events:none;animation:bt-dmg .8s ease-out forwards}
       /* combo badge */
-      .bt-combo{position:absolute;top:8px;right:10px;z-index:5;background:linear-gradient(135deg,#f59e0b,#dc2626);color:#fff;font-weight:900;font-size:13px;padding:4px 10px;border-radius:20px;box-shadow:0 2px 8px rgba(0,0,0,.3);animation:bt-combo-in .4s ease-out}
-
-      .bt-action-bar{position:fixed;bottom:0;left:0;right:0;padding:12px 16px;background:var(--surface);border-top:1px solid var(--border);z-index:50;box-shadow:0 -4px 16px rgba(0,0,0,.1)}
-      .bt-feedback{font-size:14px;text-align:center;min-height:22px;font-weight:700;margin-bottom:8px}
+      .bt-combo{position:absolute;top:4%;right:4%;z-index:6;background:linear-gradient(135deg,#f59e0b,#dc2626);color:#fff;font-weight:900;font-size:13px;padding:4px 11px;border-radius:20px;box-shadow:0 2px 8px rgba(0,0,0,.3);animation:bt-combo-in .4s ease-out;transform-origin:center}
+      /* HP hearts (player lives) bottom-left of scene */
+      .bt-lives{position:absolute;bottom:4%;left:4%;z-index:4;font-size:18px;letter-spacing:2px;background:rgba(0,0,0,.25);padding:3px 10px;border-radius:14px}
+      .bt-exit-btn{position:absolute;top:4%;right:4%;z-index:7;background:rgba(0,0,0,.35);border:none;color:#fff;font-size:15px;cursor:pointer;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;line-height:1}
+      .bt-exit-btn:hover{background:rgba(0,0,0,.55)}
+      /* ===== dialog / question box (bottom) ===== */
+      .bt-dialog{background:#f7f7ef;border:3px solid #3a3a3a;border-top:none;border-radius:0 0 14px 14px;padding:14px 16px 12px;min-height:64px}
+      .bt-dialog .dq-label{font-size:13px;color:#555;margin-bottom:6px;font-weight:600}
+      .bt-dialog .dq-word{font-size:22px;font-weight:800;line-height:1.25;color:#222}
+      .bt-dialog .dq-pos{font-size:13px;color:#777;margin-top:2px}
+      .bt-typed-cursor{display:inline-block;width:8px;animation:bt-cursor .8s steps(1) infinite}
+      .bt-feedback{font-size:14px;text-align:center;min-height:22px;font-weight:700;margin:8px 0}
+      .bt-options-wrap{margin-top:10px}
       @media (max-width:380px){
-        .bt-monster-main{font-size:60px}
-        .bt-arena{min-height:150px;padding:14px 10px 12px}
-        .bt-arena.boss .bt-monster-main{font-size:74px}
+        div.bt-monster-main{font-size:58px}
+        .bt-np-name{font-size:13px}
+        .bt-nameplate{min-width:140px;padding:5px 10px 6px 8px}
+        .bt-dialog .dq-word{font-size:19px}
       }
-    `;
+    `
     document.head.appendChild(st);
   }
   const totalStages = battleTotalStages;
@@ -2154,45 +2196,55 @@ function renderBattleUI(){
   const hpHearts = '❤️'.repeat(battleHP) + '🖤'.repeat(BATTLE_MAX_HP - battleHP);
   const isBoss = !!monster.isBoss;
   const totalMonsters = battleStageWords.length;
-  // wave pips: one per monster in this stage
   const wavePips = Array.from({length: totalMonsters}, (_,i)=>{
-    const aliveIdx = totalMonsters - battleMonsterHP; // how many already defeated
+    const defeated = totalMonsters - battleMonsterHP;
     let cls='bt-wave-pip';
-    if(i < aliveIdx) cls+=''; // defeated (dim)
-    else if(i === aliveIdx) cls+=' current alive';
+    if(i < defeated) cls+='';
+    else if(i === defeated) cls+=' current alive';
     else cls+=' alive';
     return `<div class="${cls}"></div>`;
   }).join('');
   const mhpPct = Math.round(battleMonsterHP/totalMonsters*100);
-
+  const lv = isBoss ? 50 : (battleStage+1)*3 + 5; // flavour level number
   window._battleCombo = window._battleCombo || 0;
 
   const studyTab = document.getElementById('t-study');
   studyTab.innerHTML = `
     <div class="bt-wrap">
-      <div class="bt-topbar${isBoss?' bt-boss-topbar':''}">
-        <span class="bt-stage">${isBoss?'⚔️ 最終 BOSS 戰':'⚔️ '+stageLabel}</span>
-        <div class="bt-hp-wrap"><span class="bt-hp-hearts" id="bt-hp">${hpHearts}</span></div>
+      <div class="bt-scene${isBoss?' boss':''}" id="bt-arena">
         <button class="bt-exit-btn" onclick="battleExit()" title="離開">✕</button>
+        <!-- clouds -->
+        <div class="bt-cloud" style="top:10%;left:12%;width:60px;height:22px"></div>
+        <div class="bt-cloud" style="top:18%;left:40%;width:46px;height:16px"></div>
+        <!-- enemy nameplate (top-left) -->
+        <div class="bt-nameplate">
+          <div class="bt-np-row1">
+            <span class="bt-np-name">${monster.name}</span>
+            <span class="bt-np-lv">Lv${lv}</span>
+          </div>
+          <div class="bt-np-hprow">
+            <span class="bt-np-hplabel">HP</span>
+            <div class="bt-np-hptrack"><div class="bt-np-hpfill" id="bt-mhp-fill" style="width:${mhpPct}%"></div></div>
+          </div>
+          <div class="bt-np-count" id="bt-mhp-text">${battleMonsterHP} / ${totalMonsters}</div>
+          <div class="bt-wave">${wavePips}</div>
+        </div>
+        <!-- enemy platform + monster (top-right) -->
+        <div class="bt-platform bt-platform-enemy"></div>
+        <div class="bt-enemy-spot">
+          ${monsterVisualHTML(monster, (isBoss?'bt-boss-anim':'bt-float')+' bt-enter')}
+        </div>
+        <!-- player lives -->
+        <div class="bt-lives" id="bt-hp">${hpHearts}</div>
       </div>
-      <div class="bt-arena${isBoss?' boss':''}" id="bt-arena">
-        <div class="bt-wave">${wavePips}</div>
-        <div class="bt-monster-main ${isBoss?'bt-boss-anim':'bt-float'}" id="bt-monster-main">${monster.emoji}</div>
-        <div class="bt-monster-name" id="bt-monster-name">${monster.name}</div>
-        <div class="bt-mhp"><div class="bt-mhp-fill" id="bt-mhp-fill" style="width:${mhpPct}%"></div></div>
-        <div class="bt-mhp-text" id="bt-mhp-text">敵方剩餘 ${battleMonsterHP} / ${totalMonsters}</div>
+      <div class="bt-dialog">
+        <div class="dq-label" id="dq-label"></div>
+        <div class="dq-word" id="dq-word"></div>
+        <div class="dq-pos" id="dq-pos"></div>
+        <div class="bt-options-wrap" id="dq-options"></div>
+        <div id="bt-feedback" class="bt-feedback"></div>
+        <button id="dq-next" class="btn btn-p" style="width:100%;display:none" onclick="battleNext()">下一題 →</button>
       </div>
-      <div class="card" id="dq-question-card" style="margin:0">
-        <div class="text-muted text-sm mb8" id="dq-label"></div>
-        <div style="font-size:21px;font-weight:700;line-height:1.3" id="dq-word"></div>
-        <div class="text-muted text-sm" id="dq-pos"></div>
-      </div>
-      <div id="dq-options"></div>
-      <div class="progress-bar"><div class="progress-fill" id="dq-bar" style="width:${Math.round(battleStage/battleTotalStages*100)}%"></div></div>
-    </div>
-    <div class="bt-action-bar" id="bt-action-bar">
-      <div id="bt-feedback" class="bt-feedback"></div>
-      <button id="dq-next" class="btn btn-p" style="width:100%;display:none" onclick="battleNext()">下一題 →</button>
     </div>`;
   showBattleQuestion();
 }
@@ -2203,6 +2255,19 @@ window.battleExit = function(){
   stuTab('home', document.querySelector('#s-student .tab'));
 };
 
+// Typewriter effect for the dialog label (Pokémon-style)
+let _btTypeTimer=null;
+function btTypewriter(el, text){
+  if(!el) return;
+  if(_btTypeTimer){ clearInterval(_btTypeTimer); _btTypeTimer=null; }
+  el.textContent='';
+  let i=0;
+  _btTypeTimer=setInterval(()=>{
+    el.textContent=text.slice(0,++i);
+    if(i>=text.length){ clearInterval(_btTypeTimer); _btTypeTimer=null; }
+  },28);
+}
+
 function showBattleQuestion(){
   const w = battleStageWords[battleStageQI];
   if(!w){ battleStageQI = 0; showBattleQuestion(); return; }
@@ -2212,7 +2277,7 @@ function showBattleQuestion(){
 
   const isFill = (battleStage * BATTLE_PER_STAGE + battleStageQI) % 2 === 1;
   if(isFill){
-    document.getElementById('dq-label').textContent = '請拼出正確的英文單字：';
+    btTypewriter(document.getElementById('dq-label'), '⚔️ 拼出正確的英文單字！');
     document.getElementById('dq-word').textContent = w.zh;
     const hint = getSpellingHint(w.en, w.pos);
     document.getElementById('dq-pos').textContent = hint ? '' : (w.pos ? '('+w.pos+')' : '');
@@ -2222,7 +2287,7 @@ function showBattleQuestion(){
       if(el){el.focus();el.scrollIntoView({behavior:'smooth',block:'center'});}
     },80);
   } else {
-    document.getElementById('dq-label').textContent = '選出正確翻譯：';
+    btTypewriter(document.getElementById('dq-label'), '⚔️ 選出正確的翻譯！');
     document.getElementById('dq-word').textContent = w.en;
     document.getElementById('dq-pos').textContent = w.pos || '';
     const others = shuffle(AW.filter(x=>x.id!==w.id)).slice(0,3);
@@ -2302,12 +2367,17 @@ async function handleBattleAnswer(correct, wid, btn, userAns){
           arenaEl.appendChild(cb);
         }
       }
-      // monster hp bar
+      // monster hp bar (Pokémon-style, colour shifts with remaining HP)
       const mhpFill=document.getElementById('bt-mhp-fill');
       const mhpText=document.getElementById('bt-mhp-text');
       const pct=Math.round(battleMonsterHP/totalMonsters*100);
-      if(mhpFill) mhpFill.style.width=pct+'%';
-      if(mhpText) mhpText.textContent=battleMonsterHP>0?`敵方剩餘 ${battleMonsterHP} / ${totalMonsters}`:'敵方全滅！';
+      if(mhpFill){
+        mhpFill.style.width=pct+'%';
+        mhpFill.classList.remove('mid','low');
+        if(pct<=25) mhpFill.classList.add('low');
+        else if(pct<=55) mhpFill.classList.add('mid');
+      }
+      if(mhpText) mhpText.textContent=`${battleMonsterHP} / ${totalMonsters}`;
       // wave pips
       const pips=arenaEl?arenaEl.querySelectorAll('.bt-wave-pip'):[];
       const defeated=totalMonsters-battleMonsterHP;
@@ -2316,12 +2386,6 @@ async function handleBattleAnswer(correct, wid, btn, userAns){
         if(i<defeated){ pip.classList.remove('alive'); }
         else if(i===defeated){ pip.classList.add('current','alive'); }
       });
-    }
-
-    const nameEl = document.getElementById('bt-monster-name');
-    if(nameEl){
-      if(battleMonsterHP <= 0) nameEl.textContent = monster.isBoss ? `🏆 ${monster.name} 倒下了！` : '🎉 全部擊敗！';
-      else nameEl.textContent = monster.name;
     }
 
     // Clean up notebook if this word was added during a wrong answer earlier
@@ -2335,8 +2399,11 @@ async function handleBattleAnswer(correct, wid, btn, userAns){
     const combo=window._battleCombo||0;
     fb.textContent = isFirstInStage ? (combo>=3?`⚔️ 連擊 x${combo}！漂亮！`:'⚔️ 命中！') : '✓ 答對';
 
-    const stageFrac = (battleStageWords.length - battleMonsterHP) / battleStageWords.length;
-    document.getElementById('dq-bar').style.width = Math.round((battleStage + stageFrac) / battleTotalStages * 100) + '%';
+    const dqBar=document.getElementById('dq-bar');
+    if(dqBar){
+      const stageFrac = (battleStageWords.length - battleMonsterHP) / battleStageWords.length;
+      dqBar.style.width = Math.round((battleStage + stageFrac) / battleTotalStages * 100) + '%';
+    }
 
     if(battleMonsterHP <= 0){
       // monster death animation
