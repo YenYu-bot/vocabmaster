@@ -352,7 +352,14 @@ async function loadAllForClass(cid) {
     // classIds 是 null 或其他型別：視為無指派
     return false;
   }).sort((a,b) => (a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0));
-  AW = ws.filter(w => AC.some(c=>c.id===w.cid)).sort((a,b)=>(a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0));
+  // Sort words by: (1) their course's position in AC, then (2) in-course sortOrder.
+  // This guarantees a stable course-by-course ordering for progress-based daily words.
+  const _acIndex = {}; AC.forEach((c,i)=>{ _acIndex[c.id]=i; });
+  AW = ws.filter(w => AC.some(c=>c.id===w.cid)).sort((a,b)=>{
+    const ca=_acIndex[a.cid]??9999, cb=_acIndex[b.cid]??9999;
+    if(ca!==cb) return ca-cb;
+    return (a.sortOrder??a.createdAt??0)-(b.sortOrder??b.createdAt??0);
+  });
   if (settingsDoc) {
     APP_SETTINGS = { dailyLimit: settingsDoc.dailyLimit||20, newWordsPerDay: settingsDoc.newWordsPerDay||20, startDate: settingsDoc.startDate||todayStr(), reviewCap: (settingsDoc.reviewCap===undefined?20:settingsDoc.reviewCap), quizCount: settingsDoc.quizCount||0 };
     if (!settingsDoc.startDate) setOne('class_settings', cid, { ...settingsDoc, startDate: todayStr() });
@@ -415,13 +422,25 @@ function getStudentTodayNewWordIds() {
   AC.forEach(c=>AW.filter(w=>w.cid===c.id).forEach(w=>{
     if(!seenEn2.has(w.en)){seenEn2.add(w.en);ordered.push(w.id);}
   }));
-  // Next unlearned words in order
-  const unlearned = ordered.filter(id=>!known[id]);
-  if(unlearned.length===0 && ordered.length>0){
-    // Whole assigned pool learned → notify super admin (deduped)
-    notifyCourseCompleted();
+  // CONTINUE from the furthest-learned position (don't go back to fill earlier gaps).
+  // Find the index of the last learned word in course order, then take the next
+  // `perDay` unlearned words AFTER it.
+  let lastLearnedIdx = -1;
+  for(let i=0;i<ordered.length;i++){ if(known[ordered[i]]) lastLearnedIdx=i; }
+  const afterTail = ordered.slice(lastLearnedIdx+1).filter(id=>!known[id]);
+  if(afterTail.length===0){
+    // No more words after the furthest-learned point.
+    // If there are also no earlier gaps, the whole pool is done → notify.
+    const anyUnlearned = ordered.some(id=>!known[id]);
+    if(!anyUnlearned && ordered.length>0){
+      notifyCourseCompleted();
+    }
+    // (If there ARE earlier gaps but nothing after the tail, we intentionally
+    //  do NOT serve them as new words — per design "don't go back". They remain
+    //  available via review/makeup or manual assignment.)
+    return [];
   }
-  return unlearned.slice(0, perDay);
+  return afterTail.slice(0, perDay);
 }
 
 // Notify super admin when a student finishes all assigned words. Deduped per
@@ -2057,6 +2076,7 @@ function startBattleStage(){
   battleStageWords = all.slice(start, start + BATTLE_PER_STAGE);
   battleStageQI = 0;
   battleMonsterHP = battleStageWords.length;
+  window._battleCombo = 0;
   window._battleStageCorrectIds = new Set(); // track correct answers within this stage
   window._battleStageWrongIds = new Set();   // track wrong-this-stage for notebook cleanup
   renderBattleUI();
@@ -2068,33 +2088,63 @@ function renderBattleUI(){
   if(!document.getElementById('bt-anim-style')){
     const st=document.createElement('style');st.id='bt-anim-style';
     st.textContent=`
-      @keyframes bt-hit{0%{transform:scale(1)}30%{transform:scale(1.35) rotate(-10deg);filter:drop-shadow(0 0 10px #f59e0b)}100%{transform:scale(1) rotate(0)}}
-      @keyframes bt-shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-6px)}75%{transform:translateX(6px)}}
-      @keyframes bt-boss-pulse{0%,100%{transform:scale(1);filter:drop-shadow(0 0 0 transparent)}50%{transform:scale(1.08);filter:drop-shadow(0 0 12px #dc2626)}}
-      .bt-hit{animation:bt-hit .35s ease-out}
-      .bt-shake{animation:bt-shake .3s}
-      .bt-boss{animation:bt-boss-pulse 1.6s ease-in-out infinite}
-      /* battle layout */
-      .bt-wrap{display:flex;flex-direction:column;gap:8px;padding-bottom:90px;min-height:calc(100vh - 200px)}
-      .bt-topbar{display:flex;justify-content:space-between;align-items:center;padding:4px 8px;background:linear-gradient(135deg,#fef3c7 0%,#fde68a 100%);border-radius:10px;font-size:13px;font-weight:600}
-      .bt-topbar .bt-stage{color:#92400e}
-      .bt-topbar .bt-hp-hearts{font-size:15px;letter-spacing:1px}
-      .bt-boss-topbar{background:linear-gradient(135deg,#fecaca 0%,#fca5a5 100%) !important;animation:bt-boss-pulse 2s ease-in-out infinite}
-      .bt-boss-topbar .bt-stage{color:#7f1d1d;font-weight:800}
-      .bt-monster-stage{position:relative;background:linear-gradient(180deg,#f0f9ff 0%,#e0f2fe 100%);border-radius:14px;padding:14px 10px 12px;text-align:center;overflow:hidden}
-      .bt-monster-stage.boss{background:linear-gradient(180deg,#fef2f2 0%,#fee2e2 100%);border:2px solid #dc2626}
-      .bt-monster-row{display:flex;justify-content:center;gap:6px;flex-wrap:wrap;margin-bottom:6px}
-      .bt-monster-circle{width:34px;height:34px;border-radius:50%;border:2px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:19px;background:var(--surface);transition:all .2s}
-      .bt-monster-circle.dead{opacity:.25;background:#e2e8f0;border-color:#cbd5e1}
-      .bt-monster-name{font-size:16px;font-weight:700;color:#0c4a6e}
-      .bt-monster-stage.boss .bt-monster-name{color:#7f1d1d;font-size:18px}
-      .bt-boss-emoji{font-size:48px;line-height:1;margin-bottom:4px}
-      .bt-action-bar{position:fixed;bottom:0;left:0;right:0;padding:12px 16px;background:var(--surface);border-top:1px solid var(--border);z-index:50;box-shadow:0 -4px 12px rgba(0,0,0,.06)}
-      .bt-feedback{font-size:13px;text-align:center;min-height:20px;font-weight:600;margin-bottom:8px}
+      @keyframes bt-hit{0%{transform:scale(1)}25%{transform:scale(1.18) rotate(-8deg)}50%{transform:scale(.9) rotate(4deg)}100%{transform:scale(1) rotate(0)}}
+      @keyframes bt-flash{0%,100%{filter:brightness(1)}40%{filter:brightness(2.2) drop-shadow(0 0 16px #fbbf24)}}
+      @keyframes bt-shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-8px)}40%{transform:translateX(8px)}60%{transform:translateX(-5px)}80%{transform:translateX(5px)}}
+      @keyframes bt-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
+      @keyframes bt-boss-pulse{0%,100%{transform:scale(1);filter:drop-shadow(0 0 4px rgba(220,38,38,.4))}50%{transform:scale(1.06);filter:drop-shadow(0 0 18px #dc2626)}}
+      @keyframes bt-enter{0%{transform:translateX(80px) scale(.5);opacity:0}100%{transform:translateX(0) scale(1);opacity:1}}
+      @keyframes bt-die{0%{transform:scale(1) rotate(0);opacity:1}100%{transform:scale(.3) rotate(40deg) translateY(30px);opacity:0}}
+      @keyframes bt-dmg{0%{transform:translateY(0) scale(.6);opacity:0}30%{transform:translateY(-18px) scale(1.2);opacity:1}100%{transform:translateY(-50px) scale(1);opacity:0}}
+      @keyframes bt-hp-pop{0%{transform:scale(1)}50%{transform:scale(1.4)}100%{transform:scale(1)}}
+      @keyframes bt-combo-in{0%{transform:scale(0) rotate(-15deg);opacity:0}60%{transform:scale(1.3) rotate(5deg)}100%{transform:scale(1) rotate(0);opacity:1}}
+      .bt-hit{animation:bt-hit .4s ease-out}
+      .bt-flash{animation:bt-flash .4s ease-out}
+      .bt-shake{animation:bt-shake .4s}
+      .bt-float{animation:bt-float 2.4s ease-in-out infinite}
+      .bt-boss-anim{animation:bt-boss-pulse 1.8s ease-in-out infinite}
+      .bt-enter{animation:bt-enter .4s cubic-bezier(.34,1.56,.64,1)}
+      .bt-die{animation:bt-die .5s ease-in forwards}
+
+      .bt-wrap{display:flex;flex-direction:column;gap:10px;padding-bottom:96px}
+      /* top status bar */
+      .bt-topbar{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:linear-gradient(135deg,#1e293b 0%,#334155 100%);border-radius:12px;color:#fff}
+      .bt-topbar .bt-stage{font-size:12px;font-weight:700;letter-spacing:.5px;opacity:.9}
+      .bt-hp-wrap{display:flex;align-items:center;gap:6px}
+      .bt-hp-hearts{font-size:17px;letter-spacing:2px}
+      .bt-boss-topbar{background:linear-gradient(135deg,#7f1d1d 0%,#dc2626 100%) !important}
+      .bt-exit-btn{background:rgba(255,255,255,.15);border:none;color:#fff;font-size:15px;cursor:pointer;width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;line-height:1}
+      .bt-exit-btn:hover{background:rgba(255,255,255,.3)}
+
+      /* battle arena */
+      .bt-arena{position:relative;background:linear-gradient(180deg,#dbeafe 0%,#bfdbfe 55%,#93c5fd 100%);border-radius:16px;padding:18px 14px 14px;text-align:center;overflow:hidden;min-height:170px;display:flex;flex-direction:column;justify-content:center;box-shadow:inset 0 -20px 30px -20px rgba(30,58,138,.4)}
+      .bt-arena.boss{background:linear-gradient(180deg,#1e1b4b 0%,#4c1d95 50%,#7f1d1d 100%)}
+      .bt-arena::after{content:'';position:absolute;left:0;right:0;bottom:0;height:38px;background:linear-gradient(180deg,transparent,rgba(30,58,138,.18));border-radius:50% 50% 0 0/100% 100% 0 0}
+      /* wave counter pips */
+      .bt-wave{display:flex;justify-content:center;gap:5px;margin-bottom:8px;position:relative;z-index:2}
+      .bt-wave-pip{width:9px;height:9px;border-radius:50%;background:rgba(255,255,255,.45);transition:all .3s;box-shadow:0 1px 2px rgba(0,0,0,.15)}
+      .bt-wave-pip.alive{background:#f59e0b;box-shadow:0 0 6px #f59e0b}
+      .bt-wave-pip.current{transform:scale(1.5);background:#fbbf24;box-shadow:0 0 10px #fbbf24}
+      /* main monster */
+      .bt-monster-main{font-size:74px;line-height:1;position:relative;z-index:2;display:inline-block;filter:drop-shadow(0 6px 8px rgba(0,0,0,.25))}
+      .bt-arena.boss .bt-monster-main{font-size:90px}
+      .bt-monster-name{font-size:15px;font-weight:700;color:#1e3a8a;margin-top:6px;position:relative;z-index:2}
+      .bt-arena.boss .bt-monster-name{color:#fecaca;font-size:17px}
+      /* monster hp bar */
+      .bt-mhp{margin:8px auto 0;max-width:200px;height:12px;background:rgba(0,0,0,.25);border-radius:6px;overflow:hidden;position:relative;z-index:2;border:1px solid rgba(255,255,255,.3)}
+      .bt-mhp-fill{height:100%;background:linear-gradient(90deg,#ef4444,#f59e0b);border-radius:6px;transition:width .4s ease}
+      .bt-mhp-text{font-size:10px;color:#fff;font-weight:700;margin-top:2px;text-shadow:0 1px 2px rgba(0,0,0,.5);position:relative;z-index:2}
+      /* damage number popup */
+      .bt-dmg-num{position:absolute;top:30%;left:50%;transform:translateX(-50%);font-size:28px;font-weight:900;color:#fbbf24;text-shadow:0 2px 4px rgba(0,0,0,.5),0 0 12px #f59e0b;z-index:5;pointer-events:none;animation:bt-dmg .8s ease-out forwards}
+      /* combo badge */
+      .bt-combo{position:absolute;top:8px;right:10px;z-index:5;background:linear-gradient(135deg,#f59e0b,#dc2626);color:#fff;font-weight:900;font-size:13px;padding:4px 10px;border-radius:20px;box-shadow:0 2px 8px rgba(0,0,0,.3);animation:bt-combo-in .4s ease-out}
+
+      .bt-action-bar{position:fixed;bottom:0;left:0;right:0;padding:12px 16px;background:var(--surface);border-top:1px solid var(--border);z-index:50;box-shadow:0 -4px 16px rgba(0,0,0,.1)}
+      .bt-feedback{font-size:14px;text-align:center;min-height:22px;font-weight:700;margin-bottom:8px}
       @media (max-width:380px){
-        .bt-monster-circle{width:30px;height:30px;font-size:17px}
-        .bt-monster-stage{padding:10px 6px 10px}
-        .bt-monster-name{font-size:15px}
+        .bt-monster-main{font-size:60px}
+        .bt-arena{min-height:150px;padding:14px 10px 12px}
+        .bt-arena.boss .bt-monster-main{font-size:74px}
       }
     `;
     document.head.appendChild(st);
@@ -2103,37 +2153,38 @@ function renderBattleUI(){
   const stageLabel = `第 ${battleStage+1} / ${totalStages} 關`;
   const hpHearts = '❤️'.repeat(battleHP) + '🖤'.repeat(BATTLE_MAX_HP - battleHP);
   const isBoss = !!monster.isBoss;
-  // boss displays as single large monster; normal stages as a row of circles
-  let monsterDisplay;
-  if(isBoss){
-    monsterDisplay = `<div id="bt-boss-emoji" class="bt-boss-emoji bt-boss">${monster.emoji}</div>
-      <div class="bt-monster-row" id="bt-monster-row" style="margin-top:4px">
-        ${Array.from({length: battleStageWords.length}, (_,i) =>
-          `<div class="bt-monster-circle${i >= battleMonsterHP ? ' dead' : ''}" style="width:14px;height:14px;font-size:0;background:${i < battleMonsterHP ? '#dc2626' : '#e2e8f0'};border-color:${i < battleMonsterHP ? '#7f1d1d' : '#cbd5e1'}"></div>`
-        ).join('')}
-      </div>`;
-  } else {
-    const monsterBars = Array.from({length: battleStageWords.length}, (_,i) =>
-      `<div class="bt-monster-circle${i >= battleMonsterHP ? ' dead' : ''}">${i < battleMonsterHP ? monster.emoji : '💨'}</div>`
-    ).join('');
-    monsterDisplay = `<div class="bt-monster-row" id="bt-monster-row">${monsterBars}</div>`;
-  }
+  const totalMonsters = battleStageWords.length;
+  // wave pips: one per monster in this stage
+  const wavePips = Array.from({length: totalMonsters}, (_,i)=>{
+    const aliveIdx = totalMonsters - battleMonsterHP; // how many already defeated
+    let cls='bt-wave-pip';
+    if(i < aliveIdx) cls+=''; // defeated (dim)
+    else if(i === aliveIdx) cls+=' current alive';
+    else cls+=' alive';
+    return `<div class="${cls}"></div>`;
+  }).join('');
+  const mhpPct = Math.round(battleMonsterHP/totalMonsters*100);
+
+  window._battleCombo = window._battleCombo || 0;
 
   const studyTab = document.getElementById('t-study');
   studyTab.innerHTML = `
     <div class="bt-wrap">
       <div class="bt-topbar${isBoss?' bt-boss-topbar':''}">
-        <span class="bt-stage">${isBoss?'⚠️ BOSS 戰':stageLabel}</span>
-        <span class="bt-hp-hearts" id="bt-hp">${hpHearts}</span>
-        <button onclick="battleExit()" style="background:transparent;border:none;color:#92400e;font-size:18px;cursor:pointer;padding:2px 4px" title="離開">✕</button>
+        <span class="bt-stage">${isBoss?'⚔️ 最終 BOSS 戰':'⚔️ '+stageLabel}</span>
+        <div class="bt-hp-wrap"><span class="bt-hp-hearts" id="bt-hp">${hpHearts}</span></div>
+        <button class="bt-exit-btn" onclick="battleExit()" title="離開">✕</button>
       </div>
-      <div class="bt-monster-stage${isBoss?' boss':''}">
-        ${monsterDisplay}
-        <div class="bt-monster-name" id="bt-monster-name">${monster.name}${isBoss?' — 最終決戰！':` × ${battleMonsterHP}`}</div>
+      <div class="bt-arena${isBoss?' boss':''}" id="bt-arena">
+        <div class="bt-wave">${wavePips}</div>
+        <div class="bt-monster-main ${isBoss?'bt-boss-anim':'bt-float'}" id="bt-monster-main">${monster.emoji}</div>
+        <div class="bt-monster-name" id="bt-monster-name">${monster.name}</div>
+        <div class="bt-mhp"><div class="bt-mhp-fill" id="bt-mhp-fill" style="width:${mhpPct}%"></div></div>
+        <div class="bt-mhp-text" id="bt-mhp-text">敵方剩餘 ${battleMonsterHP} / ${totalMonsters}</div>
       </div>
       <div class="card" id="dq-question-card" style="margin:0">
         <div class="text-muted text-sm mb8" id="dq-label"></div>
-        <div style="font-size:20px;font-weight:700;line-height:1.3" id="dq-word"></div>
+        <div style="font-size:21px;font-weight:700;line-height:1.3" id="dq-word"></div>
         <div class="text-muted text-sm" id="dq-pos"></div>
       </div>
       <div id="dq-options"></div>
@@ -2222,61 +2273,79 @@ async function handleBattleAnswer(correct, wid, btn, userAns){
     fb.style.color = 'var(--success)';
 
     const monster = getBattleMonster(battleStage);
-    const nameEl = document.getElementById('bt-monster-name');
-    if(nameEl){
-      if(battleMonsterHP <= 0) nameEl.textContent = monster.isBoss ? `🏆 ${monster.name} 已倒下！` : '🎉 全部擊敗！';
-      else if(monster.isBoss) nameEl.textContent = `${monster.name} — 剩 ${battleMonsterHP} HP`;
-      else nameEl.textContent = `${monster.name} × ${battleMonsterHP}`;
-    }
-    const row = document.getElementById('bt-monster-row');
-    if(row && isFirstInStage){
-      const circles = row.querySelectorAll('div');
-      const dyingCircle = circles[battleMonsterHP];
-      if(dyingCircle){
-        dyingCircle.classList.add('bt-hit');
-        setTimeout(()=>{
-          dyingCircle.classList.add('dead');
-          if(monster.isBoss){
-            // Clear inline boss-style background so .dead can take effect visually
-            dyingCircle.style.background = '#e2e8f0';
-            dyingCircle.style.borderColor = '#cbd5e1';
-          } else {
-            dyingCircle.textContent = '💨';
-          }
-          dyingCircle.classList.remove('bt-hit');
-        }, 280);
+    const totalMonsters = battleStageWords.length;
+    const mainEl = document.getElementById('bt-monster-main');
+    const arenaEl = document.getElementById('bt-arena');
+
+    if(isFirstInStage){
+      // combo
+      window._battleCombo = (window._battleCombo||0) + 1;
+      // hit animation + flash on the main monster
+      if(mainEl){
+        mainEl.classList.remove('bt-float','bt-boss-anim');
+        mainEl.classList.add('bt-hit','bt-flash');
+        setTimeout(()=>{ mainEl.classList.remove('bt-hit','bt-flash'); if(battleMonsterHP>0) mainEl.classList.add(monster.isBoss?'bt-boss-anim':'bt-float'); },420);
       }
-      if(monster.isBoss){
-        const bossEl = document.getElementById('bt-boss-emoji');
-        if(bossEl){
-          const scale = 0.6 + 0.4 * (battleMonsterHP / battleStageWords.length);
-          bossEl.style.transform = `scale(${scale})`;
-          bossEl.style.transition = 'transform 0.3s';
+      // floating damage number
+      if(arenaEl){
+        const dmg=document.createElement('div');
+        dmg.className='bt-dmg-num';
+        const combo=window._battleCombo;
+        dmg.textContent = combo>=3 ? `-1 x${combo}🔥` : '-1';
+        arenaEl.appendChild(dmg);
+        setTimeout(()=>dmg.remove(),800);
+        // combo badge
+        if(combo>=2){
+          let cb=arenaEl.querySelector('.bt-combo');
+          if(cb)cb.remove();
+          cb=document.createElement('div');cb.className='bt-combo';cb.textContent=`COMBO ${combo}`;
+          arenaEl.appendChild(cb);
         }
       }
+      // monster hp bar
+      const mhpFill=document.getElementById('bt-mhp-fill');
+      const mhpText=document.getElementById('bt-mhp-text');
+      const pct=Math.round(battleMonsterHP/totalMonsters*100);
+      if(mhpFill) mhpFill.style.width=pct+'%';
+      if(mhpText) mhpText.textContent=battleMonsterHP>0?`敵方剩餘 ${battleMonsterHP} / ${totalMonsters}`:'敵方全滅！';
+      // wave pips
+      const pips=arenaEl?arenaEl.querySelectorAll('.bt-wave-pip'):[];
+      const defeated=totalMonsters-battleMonsterHP;
+      pips.forEach((pip,i)=>{
+        pip.classList.remove('current');
+        if(i<defeated){ pip.classList.remove('alive'); }
+        else if(i===defeated){ pip.classList.add('current','alive'); }
+      });
     }
 
-    // Clean up notebook if this word was added during a wrong answer earlier (in any stage)
+    const nameEl = document.getElementById('bt-monster-name');
+    if(nameEl){
+      if(battleMonsterHP <= 0) nameEl.textContent = monster.isBoss ? `🏆 ${monster.name} 倒下了！` : '🎉 全部擊敗！';
+      else nameEl.textContent = monster.name;
+    }
+
+    // Clean up notebook if this word was added during a wrong answer earlier
     if(wrongSet.has(wid)){
       try{ await removeFromNotebook(wid); }catch(e){}
       wrongSet.delete(wid);
     }
-    // Write to Firebase only first time overall
     if(isFirstOverall){
       recordBattleProgress(wid, true);
     }
-    fb.textContent = isFirstInStage ? '⚔️ 命中！怪物受傷了！' : '✓ 答對';
+    const combo=window._battleCombo||0;
+    fb.textContent = isFirstInStage ? (combo>=3?`⚔️ 連擊 x${combo}！漂亮！`:'⚔️ 命中！') : '✓ 答對';
 
-    // Update progress bar incrementally: stages cleared + fraction of current stage
     const stageFrac = (battleStageWords.length - battleMonsterHP) / battleStageWords.length;
     document.getElementById('dq-bar').style.width = Math.round((battleStage + stageFrac) / battleTotalStages * 100) + '%';
 
     if(battleMonsterHP <= 0){
+      // monster death animation
+      if(mainEl) mainEl.classList.add('bt-die');
       fb.textContent = monster.isBoss ? '🏆 BOSS 倒下！' : '🎉 全滅！前進下一關！';
       document.getElementById('dq-next').textContent = battleStage+1 >= battleTotalStages ? '🏆 完成任務！' : '➡️ 進入下一關';
       document.getElementById('dq-next').style.display = 'block';
     } else {
-      document.getElementById('dq-next').textContent = '下一隻 →';
+      document.getElementById('dq-next').textContent = '下一擊 →';
       document.getElementById('dq-next').style.display = 'block';
     }
   } else {
@@ -2286,17 +2355,18 @@ async function handleBattleAnswer(correct, wid, btn, userAns){
     if(!wrongWords.includes(wid)) wrongWords.push(wid);
     window._dailyForgot = window._dailyForgot || new Set();
     window._dailyForgot.add(wid);
+    window._battleCombo = 0; // reset combo on miss
     if(btn){ btn.classList.add('wrong'); document.querySelectorAll('.quiz-opt').forEach(b=>{if(b.textContent===w.zh&&!b.classList.contains('wrong'))b.classList.add('correct');}); }
     if(userAns){ const inp=document.getElementById('dq-fill'); if(inp){inp.style.borderColor='var(--danger)';inp.style.background='var(--dl)';}}
-    const shakeRow=document.getElementById('bt-monster-row');
-    if(shakeRow){shakeRow.classList.add('bt-shake');setTimeout(()=>shakeRow.classList.remove('bt-shake'),320);}
-    // Auto-add to notebook (silently) - will be cleaned up if eventually answered correctly
+    // monster counter-attacks: shake the whole arena, remove combo badge
+    const arenaEl=document.getElementById('bt-arena');
+    if(arenaEl){ arenaEl.classList.add('bt-shake'); setTimeout(()=>arenaEl.classList.remove('bt-shake'),420); const cb=arenaEl.querySelector('.bt-combo'); if(cb)cb.remove(); }
     addToNotebook(wid).catch(()=>{});
 
     const fb = document.getElementById('bt-feedback');
     fb.style.color = 'var(--danger)';
     const hpHearts = '❤️'.repeat(battleHP) + '🖤'.repeat(BATTLE_MAX_HP - battleHP);
-    {const hpEl=document.getElementById('bt-hp'); if(hpEl) hpEl.textContent = hpHearts;}
+    {const hpEl=document.getElementById('bt-hp'); if(hpEl){ hpEl.textContent = hpHearts; hpEl.style.animation='bt-hp-pop .4s'; setTimeout(()=>{hpEl.style.animation='';},420); }}
 
     if(battleHP <= 0){
       fb.textContent = `💀 正確答案：${w.en}`;
@@ -2392,6 +2462,7 @@ function showBossVictory(){
 
 async function battleGameOver(){
   battleGameOverCount++;
+  window._battleCombo = 0;
   // Clean up: remove notebook entries added during this failed stage attempt
   const wrongSet = window._battleStageWrongIds || new Set();
   const correctSet = window._battleStageCorrectIds || new Set();
