@@ -2120,6 +2120,26 @@ function renderBattleUI(){
       @keyframes bt-boss-pulse{0%,100%{transform:scale(1);filter:drop-shadow(0 0 4px rgba(220,38,38,.4))}50%{transform:scale(1.05);filter:drop-shadow(0 0 16px #dc2626)}}
       @keyframes bt-enter{0%{transform:translateX(60px) scale(.4);opacity:0}100%{transform:translateX(0) scale(1);opacity:1}}
       @keyframes bt-die{0%{transform:scale(1) rotate(0);opacity:1;filter:brightness(1)}30%{filter:brightness(3)}100%{transform:scale(.2) rotate(30deg) translateY(40px);opacity:0}}
+      @keyframes bt-knockback{0%{transform:translate(0,0) scale(1)}15%{transform:translate(22px,-6px) scale(1.04) rotate(6deg)}35%{transform:translate(-8px,2px) scale(.95) rotate(-3deg)}60%{transform:translate(5px,0) scale(1.01) rotate(1deg)}100%{transform:translate(0,0) scale(1) rotate(0)}}
+      @keyframes bt-damage-flash{0%{filter:none}15%{filter:brightness(0.3) sepia(1) hue-rotate(-30deg) saturate(6)}30%{filter:brightness(3) saturate(0)}45%{filter:brightness(0.3) sepia(1) hue-rotate(-30deg) saturate(6)}60%{filter:brightness(2.5) saturate(0)}100%{filter:none}}
+      @keyframes bt-impact{0%{transform:translate(-50%,-50%) scale(.2);opacity:0}25%{transform:translate(-50%,-50%) scale(1.3);opacity:1}100%{transform:translate(-50%,-50%) scale(1.8);opacity:0}}
+      @keyframes bt-scene-flash{0%{opacity:0}20%{opacity:.45}100%{opacity:0}}
+      .bt-knockback{animation:bt-knockback .5s ease-out}
+      .bt-damage-flash{animation:bt-damage-flash .5s ease-out}
+      .bt-impact{position:absolute;top:48%;left:50%;font-size:56px;z-index:6;pointer-events:none;animation:bt-impact .5s ease-out forwards;filter:drop-shadow(0 0 8px #fbbf24)}
+      .bt-scene-flash-overlay{position:absolute;inset:0;background:radial-gradient(circle at 70% 35%,rgba(255,80,80,.7),transparent 60%);z-index:5;pointer-events:none;animation:bt-scene-flash .5s ease-out forwards}
+      /* stronger Pokémon-style hit: knockback + recoil */
+      @keyframes bt-knockback{0%{transform:translate(0,0) scale(1)}15%{transform:translate(22px,-6px) scale(1.04) rotate(6deg)}35%{transform:translate(-8px,2px) scale(.95) rotate(-3deg)}60%{transform:translate(5px,0) scale(1.01) rotate(1deg)}100%{transform:translate(0,0) scale(1) rotate(0)}}
+      /* flash to solid red/white like classic RPG damage */
+      @keyframes bt-damage-flash{0%{filter:none}15%{filter:brightness(0.3) sepia(1) hue-rotate(-30deg) saturate(6)}30%{filter:brightness(3) saturate(0)}45%{filter:brightness(0.3) sepia(1) hue-rotate(-30deg) saturate(6)}60%{filter:brightness(2.5) saturate(0)}100%{filter:none}}
+      /* impact burst on the monster */
+      @keyframes bt-impact{0%{transform:translate(-50%,-50%) scale(.2);opacity:0}25%{transform:translate(-50%,-50%) scale(1.3);opacity:1}100%{transform:translate(-50%,-50%) scale(1.8);opacity:0}}
+      /* full-scene red flash overlay */
+      @keyframes bt-scene-flash{0%{opacity:0}20%{opacity:.45}100%{opacity:0}}
+      .bt-knockback{animation:bt-knockback .5s ease-out}
+      .bt-damage-flash{animation:bt-damage-flash .5s ease-out}
+      .bt-impact{position:absolute;top:50%;left:50%;font-size:56px;z-index:6;pointer-events:none;animation:bt-impact .5s ease-out forwards;filter:drop-shadow(0 0 8px #fbbf24)}
+      .bt-scene-flash-overlay{position:absolute;inset:0;background:radial-gradient(circle at 70% 35%,rgba(255,80,80,.7),transparent 60%);z-index:5;pointer-events:none;animation:bt-scene-flash .5s ease-out forwards}
       @keyframes bt-dmg{0%{transform:translate(-50%,0) scale(.6);opacity:0}30%{transform:translate(-50%,-20px) scale(1.2);opacity:1}100%{transform:translate(-50%,-54px) scale(1);opacity:0}}
       @keyframes bt-hp-pop{0%{transform:scale(1)}50%{transform:scale(1.4)}100%{transform:scale(1)}}
       @keyframes bt-combo-in{0%{transform:scale(0) rotate(-15deg);opacity:0}60%{transform:scale(1.25) rotate(5deg)}100%{transform:scale(1) rotate(0);opacity:1}}
@@ -2345,11 +2365,33 @@ async function handleBattleAnswer(correct, wid, btn, userAns){
     if(isFirstInStage){
       // combo
       window._battleCombo = (window._battleCombo||0) + 1;
-      // hit animation + flash on the main monster
+      // STRONG hit reaction: knockback + damage-flash (red/white) on the monster
       if(mainEl){
-        mainEl.classList.remove('bt-float','bt-boss-anim');
-        mainEl.classList.add('bt-hit','bt-flash');
-        setTimeout(()=>{ mainEl.classList.remove('bt-hit','bt-flash'); if(battleMonsterHP>0) mainEl.classList.add(monster.isBoss?'bt-boss-anim':'bt-float'); },420);
+        mainEl.classList.remove('bt-float','bt-boss-anim','bt-knockback','bt-damage-flash');
+        // force reflow so re-adding the class restarts the animation
+        void mainEl.offsetWidth;
+        mainEl.classList.add('bt-knockback','bt-damage-flash');
+        setTimeout(()=>{
+          mainEl.classList.remove('bt-knockback','bt-damage-flash');
+          if(battleMonsterHP>0) mainEl.classList.add(monster.isBoss?'bt-boss-anim':'bt-float');
+        },520);
+      }
+      // impact burst (💥) centered on the monster
+      const enemySpot=arenaEl?arenaEl.querySelector('.bt-enemy-spot'):null;
+      if(enemySpot){
+        const impact=document.createElement('div');
+        impact.className='bt-impact';
+        impact.textContent='💥';
+        enemySpot.style.position='relative';
+        enemySpot.appendChild(impact);
+        setTimeout(()=>impact.remove(),520);
+      }
+      // brief full-scene red flash
+      if(arenaEl){
+        const flash=document.createElement('div');
+        flash.className='bt-scene-flash-overlay';
+        arenaEl.appendChild(flash);
+        setTimeout(()=>flash.remove(),520);
       }
       // floating damage number
       if(arenaEl){
@@ -2557,8 +2599,8 @@ async function battleGameOver(){
       <div style="font-size:64px;margin-bottom:12px;animation:bt-shake .6s ease-in-out 3">💀</div>
       <h2 style="color:var(--danger);margin-bottom:6px;font-size:22px">HP 歸零！</h2>
       <div class="text-muted" style="font-size:13px;margin-bottom:20px">${stageLabel}</div>
-      <div style="background:var(--dl);border-radius:14px;padding:16px 20px;margin-bottom:24px;width:100%;max-width:300px">
-        <div style="font-size:48px;margin-bottom:4px">${monster.emoji}</div>
+      <div style="background:var(--dl);border-radius:14px;padding:18px 20px;margin-bottom:24px;width:100%;max-width:300px">
+        <div style="display:flex;justify-content:center;margin-bottom:6px;max-width:96px;margin-left:auto;margin-right:auto">${monsterVisualHTML(monster,'bt-float')}</div>
         <div style="font-weight:700;color:var(--danger);font-size:15px">${monster.name} 嘲笑著你...</div>
       </div>
       <button class="btn btn-p" style="width:100%;max-width:300px;font-size:16px;padding:14px" onclick="restartBattleStage()">⚔️ 再戰一次</button>
