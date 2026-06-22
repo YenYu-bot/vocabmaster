@@ -398,26 +398,55 @@ function computeNewWordsForDate(dateStr) {
   }));
   return ordered.slice(dayIdx*perDay, (dayIdx+1)*perDay);
 }
+// New words are now PROGRESS-BASED: give the next `perDay` unlearned words
+// in course order, regardless of calendar days. When the assigned word pool
+// is exhausted, notify the super admin (once).
 function getStudentTodayNewWordIds() {
   const plan = APP_SETTINGS.todayPlan;
   const perDay = APP_SETTINGS.newWordsPerDay||20;
   if (plan?.wordIds?.length) {
-    // Safety cap: even a manual plan should not exceed a sane daily limit,
-    // guarding against corrupt plans with hundreds of words.
     const manualCap = Math.max(perDay * 3, 60);
     return plan.wordIds.slice(0, manualCap);
   }
-  const joinDate = CU_DATA?.joinDate||APP_SETTINGS.startDate||todayStr();
-  const startDate = APP_SETTINGS.startDate||todayStr();
-  const systemDayIdx = Math.max(0,Math.floor((new Date(todayStr())-new Date(startDate))/86400000));
-  const joinDayIdx = Math.max(0,Math.floor((new Date(joinDate)-new Date(startDate))/86400000));
-  const effectiveDayIdx = Math.max(systemDayIdx,joinDayIdx);
+  const known = CU_DATA?.known || {};
+  // Course-ordered, de-duplicated word list for this class
   const ordered = [];
   const seenEn2 = new Set();
   AC.forEach(c=>AW.filter(w=>w.cid===c.id).forEach(w=>{
     if(!seenEn2.has(w.en)){seenEn2.add(w.en);ordered.push(w.id);}
   }));
-  return ordered.slice(effectiveDayIdx*perDay,(effectiveDayIdx+1)*perDay);
+  // Next unlearned words in order
+  const unlearned = ordered.filter(id=>!known[id]);
+  if(unlearned.length===0 && ordered.length>0){
+    // Whole assigned pool learned → notify super admin (deduped)
+    notifyCourseCompleted();
+  }
+  return unlearned.slice(0, perDay);
+}
+
+// Notify super admin when a student finishes all assigned words. Deduped per
+// student+class via a flag on the user doc so we don't spam notifications.
+async function notifyCourseCompleted(){
+  try{
+    const u=CU_DATA; if(!u||!CU) return;
+    const cid=CURRENT_CLASS?.id||'';
+    const flagKey='courseDone_'+cid;
+    const flags=u._notifyFlags||{};
+    if(flags[flagKey]) return; // already notified for this class
+    flags[flagKey]=true; u._notifyFlags=flags;
+    const notifId=CU.id+'_'+cid+'_coursedone';
+    await setOne('notifications', notifId, {
+      type:'course_completed',
+      studentId:CU.id,
+      studentName:CU.name||CU.id,
+      classId:cid,
+      className:(CURRENT_CLASS?(CURRENT_CLASS.level+' '+CURRENT_CLASS.grade):cid),
+      learnedCount:Object.keys(u.known||{}).length,
+      createdAt:Date.now(),
+      read:false
+    });
+    await updateOne('users',CU.id,{_notifyFlags:flags});
+  }catch(e){ /* non-critical */ }
 }
 // ── vocabulary notebook helpers ─────────────────────────────
 function getNotebook() { return new Set(CU_DATA?.notebook||[]); }
@@ -851,12 +880,18 @@ function getMissedDates() {
 }
 
 function renderMissedTasks() {
-  const missed=getMissedDates();
+  // Progress-based mode: new words are assigned by actual progress, so there is
+  // no longer a per-day "missed task" concept — unlearned words automatically
+  // become the next day's new words. Hide this section entirely.
   const section=document.getElementById('missed-tasks-section');
+  if(section) section.style.display='none';
+  return;
+  // (legacy calendar-based code kept below but unreachable)
+  const missed=getMissedDates();
   const list=document.getElementById('missed-tasks-list');
   const countEl=document.getElementById('missed-count');
-  if(!missed.length){section.style.display='none';return;}
-  section.style.display='block'; countEl.textContent=missed.length+' 天未完成'; list.innerHTML='';
+  if(!missed.length){return;}
+  countEl.textContent=missed.length+' 天未完成'; list.innerHTML='';
   missed.forEach(ds=>{
     const dp=CU_DATA.daily_progress||{};
     const _cls=CU?.classes||[];
@@ -2831,6 +2866,48 @@ window.adminTab=function(t,el){
 };
 
 // ── account management ────────────────────────────────────────
+async function renderAdminNotifications(){
+  const el=document.getElementById('admin-notifications');
+  if(!el)return;
+  try{
+    const notifs=(await getAll('notifications'))
+      .filter(n=>!n.read)
+      .sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
+    if(!notifs.length){ el.innerHTML=''; return; }
+    el.innerHTML=`
+      <div class="card mb12" style="border-left:3px solid var(--brand)">
+        <div class="flex gap8 mb8" style="align-items:center;justify-content:space-between">
+          <span class="bold text-sm">🔔 通知（${notifs.length}）</span>
+          <button class="btn btn-sm" onclick="clearAllNotifications()">全部標為已讀</button>
+        </div>
+        ${notifs.map(n=>{
+          let msg='';
+          if(n.type==='course_completed'){
+            msg=`🎓 <b>${n.studentName}</b>（${n.className}）已學完所有指派單字（共 ${n.learnedCount} 字），請考慮指派新課程或升級。`;
+          } else {
+            msg=n.message||'（通知）';
+          }
+          const when=n.createdAt?new Date(n.createdAt).toLocaleString('zh-TW',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}):'';
+          return `<div style="display:flex;align-items:flex-start;gap:8px;padding:10px 12px;background:var(--bg);border-radius:8px;margin-bottom:8px">
+            <div style="flex:1;font-size:13px;line-height:1.5">${msg}<div class="text-muted" style="font-size:11px;margin-top:2px">${when}</div></div>
+            <button class="btn btn-sm" style="flex-shrink:0" onclick="dismissNotification('${n.id}')">✓</button>
+          </div>`;
+        }).join('')}
+      </div>`;
+  }catch(e){ el.innerHTML=''; }
+}
+window.dismissNotification=async function(id){
+  try{ await updateOne('notifications',id,{read:true}); }catch(e){}
+  renderAdminNotifications();
+};
+window.clearAllNotifications=async function(){
+  try{
+    const notifs=(await getAll('notifications')).filter(n=>!n.read);
+    await Promise.all(notifs.map(n=>updateOne('notifications',n.id,{read:true})));
+  }catch(e){}
+  renderAdminNotifications();
+};
+
 async function renderAccountList(){
   const list=document.getElementById('account-list');
   list.innerHTML='<div class="loading">載入中...</div>';
@@ -2838,6 +2915,7 @@ async function renderAccountList(){
   const students=accounts.filter(a=>a.role==='student').sort((a,b)=>a.id.localeCompare(b.id));
   const admins=accounts.filter(a=>a.role==='admin');
   const isSuperAdmin = CU.id === 'bhcst0001';
+  if(isSuperAdmin) renderAdminNotifications();
 
   // stats
   const total=students.length;
@@ -3826,12 +3904,11 @@ window.addCourse=async function(inputId){
     updateIC();updateFC();renderAdminCourses();
   }catch(e){alert('新增失敗：'+e.message);}
 };
-let courseGrouping=false;
+let courseGroupMode='none'; // 'none' | 'class' | 'category'
 let collapsedGroups=new Set();
-window.toggleCourseGrouping=function(){
-  courseGrouping=!courseGrouping;
-  const btn=document.getElementById('course-group-btn');
-  if(btn){btn.style.background=courseGrouping?'var(--brand)':'';btn.style.color=courseGrouping?'#fff':'';btn.style.borderColor=courseGrouping?'var(--brand)':'';btn.style.color=courseGrouping?'#fff':'';}
+window.setCourseGroupMode=function(mode){
+  courseGroupMode=mode;
+  collapsedGroups=new Set();
   renderAdminCourses();
 };
 window.diagnoseCourseClasses=async function(){
@@ -3919,15 +3996,35 @@ window.diagnoseCourseClasses=async function(){
     window.runDiag();
   }
 };
+// Infer a course category (教材系列) from its name. Used as default when no
+// explicit category set. Strategy: take the leading non-numeric prefix.
+function inferCourseCategory(name){
+  if(!name) return '其他';
+  let n=name.trim();
+  // Cut at a lesson/unit marker (L4, U44, "Unit 4", "Lesson 1", "第N課").
+  // Everything before the marker is the series name.
+  const markerMatch=n.match(/\s*(?:[LU]\d|Unit\s*\d|Lesson\s*\d|第\s*\d+\s*課)/i);
+  if(markerMatch&&markerMatch.index>0) return n.slice(0,markerMatch.index).trim();
+  const m2=n.match(/^[\u4e00-\u9fa5A-Za-z0-9]{2,8}/);
+  return m2?m2[0].trim():'其他';
+}
+// Get effective category: explicit field, else inferred
+function getCourseCategory(c){
+  return (c.category&&c.category.trim())?c.category.trim():inferCourseCategory(c.name);
+}
+
 function makeCourseRow(c,container,dragRef){
   const ws=AW.filter(w=>w.cid===c.id);
   const row=document.createElement('div');row.className='course-row';row.draggable=true;row.dataset.id=c.id;
   const isSA=CU?.id==='bhcst0001';
   const classIds=Array.isArray(c.classIds)?c.classIds:(c.classId?[c.classId]:[]);
   const classLabels=classIds.map(cid=>{const cls=ALL_CLASSES.find(x=>x.id===cid);return cls?(cls.displayName||cls.grade):cid;}).join('、');
+  const cat=getCourseCategory(c);
+  const catIsCustom=!!(c.category&&c.category.trim());
   row.innerHTML=`<div style="padding:0 8px 0 2px;cursor:grab;color:var(--muted);font-size:18px;user-select:none">☰</div>
     <div style="flex:1"><div class="bold text-sm">${c.name}</div>
-    <div class="text-muted" style="font-size:12px">${ws.length} 個單字${classLabels?' · '+classLabels:''}</div></div>
+    <div class="text-muted" style="font-size:12px">${ws.length} 個單字${classLabels?' · '+classLabels:''} · <span style="color:${catIsCustom?'var(--brand)':'var(--muted)'}">📚 ${cat}</span></div></div>
+    ${isSA?`<button class="btn btn-sm" style="flex-shrink:0" onclick="editCourseCategory('${c.id}')">分類</button>`:''}
     ${isSA?`<button class="btn btn-sm" style="flex-shrink:0" onclick="editCourseName('${c.id}','${c.name.replace(/'/g,"\\'")}')">改名</button>`:''}
     <button class="btn btn-sm" style="flex-shrink:0" onclick="manageCourseClasses('${c.id}')">指派班級</button>
     <button class="btn btn-sm" style="flex-shrink:0" onclick="openWordSort('${c.id}')">排序單字</button>
@@ -3950,8 +4047,9 @@ async function renderAdminCourses(){
   const q=(document.getElementById('course-search')?.value||'').toLowerCase().trim();
   // 分組模式：從 Firebase 載入全部課程（跨班級搜尋）
   // 非分組模式：若有選班級，只顯示當前班級的 AC；若未選班級，顯示全部 AC（含全部課程）但搜尋依名稱過濾
+  const grouped = courseGroupMode!=='none';
   let baseList;
-  if(courseGrouping){
+  if(grouped){
     baseList=await getAll('courses');
   } else if(CURRENT_CLASS){
     const cid=CURRENT_CLASS.id;
@@ -3970,26 +4068,41 @@ async function renderAdminCourses(){
   hint.textContent=`共 ${filtered.length} 個課程${q?' · 搜尋：「'+q+'」':''}`;
   list.appendChild(hint);
   const dragRef={v:null};
-  if(courseGrouping){
+  if(grouped){
     const groups={};
-    filtered.forEach(c=>{
-      const cids=Array.isArray(c.classIds)?c.classIds:(c.classId?[c.classId]:[]);
-      if(!cids.length){(groups['未分類']=groups['未分類']||[]).push(c);}
-      else cids.forEach(cid=>{(groups[cid]=groups[cid]||[]).push(c);});
-    });
-    const keys=[...CLASS_PROGRESSION,'未分類'].filter(k=>groups[k]);
-    Object.keys(groups).forEach(k=>{if(!keys.includes(k))keys.push(k);});
-    keys.forEach(cid=>{
-      const courses=groups[cid];if(!courses?.length)return;
-      const cls=ALL_CLASSES.find(c=>c.id===cid);
-      const label=cid==='未分類'?'📂 未分類':cls?(cls.displayName||cls.level+' '+cls.grade):cid;
-      const isCollapsed=collapsedGroups.has(cid);
+    let orderedKeys=[];
+    if(courseGroupMode==='class'){
+      filtered.forEach(c=>{
+        const cids=Array.isArray(c.classIds)?c.classIds:(c.classId?[c.classId]:[]);
+        if(!cids.length){(groups['未分類']=groups['未分類']||[]).push(c);}
+        else cids.forEach(cid=>{(groups[cid]=groups[cid]||[]).push(c);});
+      });
+      orderedKeys=[...CLASS_PROGRESSION,'未分類'].filter(k=>groups[k]);
+      Object.keys(groups).forEach(k=>{if(!orderedKeys.includes(k))orderedKeys.push(k);});
+    } else { // category
+      filtered.forEach(c=>{
+        const cat=getCourseCategory(c);
+        (groups[cat]=groups[cat]||[]).push(c);
+      });
+      orderedKeys=Object.keys(groups).sort((a,b)=>a.localeCompare(b,'zh-Hant'));
+    }
+    orderedKeys.forEach(gkey=>{
+      const courses=groups[gkey];if(!courses?.length)return;
+      let label;
+      if(courseGroupMode==='class'){
+        const cls=ALL_CLASSES.find(c=>c.id===gkey);
+        label=gkey==='未分類'?'📂 未分類':cls?(cls.displayName||cls.level+' '+cls.grade):gkey;
+      } else {
+        label='📚 '+gkey;
+      }
+      const isCollapsed=collapsedGroups.has(gkey);
       const hdr=document.createElement('div');
       hdr.style.cssText='display:flex;align-items:center;gap:8px;padding:9px 10px;cursor:pointer;background:var(--bg);border-radius:8px;margin-bottom:4px;user-select:none';
       hdr.innerHTML=`<span style="display:inline-block;transform:rotate(${isCollapsed?'-90deg':'0deg'});transition:transform 0.2s;font-size:13px">▾</span>
         <span class="bold text-sm">${label}</span>
-        <span class="tag tag-b" style="font-size:11px">${courses.length} 個</span>`;
-      hdr.onclick=()=>{collapsedGroups.has(cid)?collapsedGroups.delete(cid):collapsedGroups.add(cid);renderAdminCourses();};
+        <span class="tag tag-b" style="font-size:11px">${courses.length} 個</span>
+        ${courseGroupMode==='category'?`<button class="btn btn-sm" style="margin-left:auto;flex-shrink:0;font-size:11px" onclick="event.stopPropagation();assignCategoryToClass('${gkey.replace(/'/g,"\\'")}')">整類指派 →</button>`:''}`;
+      hdr.onclick=(e)=>{if(e.target.tagName==='BUTTON')return;collapsedGroups.has(gkey)?collapsedGroups.delete(gkey):collapsedGroups.add(gkey);renderAdminCourses();};
       list.appendChild(hdr);
       if(!isCollapsed){
         const grp=document.createElement('div');grp.style.cssText='margin-bottom:10px;padding-left:10px;border-left:3px solid var(--border)';
@@ -4059,6 +4172,142 @@ window.saveWordSort=async function(cid,btn){
     setTimeout(()=>modal.remove(),800);
   }catch(e){msg.style.color='var(--danger)';msg.textContent='失敗：'+e.message;}
 };
+window.editCourseCategory=async function(cid){
+  const c=AC.find(x=>x.id===cid)||(await getAll('courses')).find(x=>x.id===cid);
+  if(!c)return;
+  const cur=getCourseCategory(c);
+  const inferred=inferCourseCategory(c.name);
+  const val=prompt(`設定「${c.name}」的分類\n\n（留空 = 自動推斷為「${inferred}」）`, c.category||'');
+  if(val===null)return; // cancelled
+  const trimmed=val.trim();
+  await updateOne('courses',cid,{category:trimmed});
+  const local=AC.find(x=>x.id===cid); if(local)local.category=trimmed;
+  renderAdminCourses();
+};
+
+// Batch assign: pick ONE class, then check MULTIPLE courses → assign all at once
+window.openBatchAssign=async function(){
+  const allCourses=await getAll('courses');
+  const classOpts=CLASS_PROGRESSION.map(cid=>{
+    const c=ALL_CLASSES.find(x=>x.id===cid);
+    return `<option value="${cid}">${c?(c.displayName||c.level+' '+c.grade):cid}</option>`;
+  }).join('');
+  const modal=document.createElement('div');
+  modal.style.cssText='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  // group courses by category for easy multi-select
+  const byCat={};
+  allCourses.forEach(c=>{const cat=getCourseCategory(c);(byCat[cat]=byCat[cat]||[]).push(c);});
+  const catKeys=Object.keys(byCat).sort((a,b)=>a.localeCompare(b,'zh-Hant'));
+  modal.innerHTML=`<div style="background:#fff;border-radius:12px;padding:20px;width:100%;max-width:480px;max-height:88vh;display:flex;flex-direction:column">
+    <div class="bold mb4">📦 批次指派課程</div>
+    <div class="text-muted mb12" style="font-size:13px">選擇目標班級，勾選要指派的課程，一次完成。</div>
+    <label style="font-size:13px;font-weight:600">目標班級</label>
+    <select id="batch-target-class" class="mb12">${classOpts}</select>
+    <div class="flex gap8 mb8">
+      <input id="batch-course-search" class="mb0" placeholder="🔍 篩選課程..." style="flex:1;font-size:13px" oninput="filterBatchCourses(this.value)"/>
+      <button class="btn btn-sm" onclick="toggleAllBatchCourses(true)">全選</button>
+      <button class="btn btn-sm" onclick="toggleAllBatchCourses(false)">清除</button>
+    </div>
+    <div id="batch-course-list" style="overflow-y:auto;flex:1;border:1px solid var(--border);border-radius:8px;padding:6px;min-height:200px">
+      ${catKeys.map(cat=>`
+        <div style="margin-bottom:6px">
+          <div style="display:flex;align-items:center;gap:6px;padding:6px 8px;background:var(--bg);border-radius:6px">
+            <input type="checkbox" class="batch-cat-cb" data-cat="${cat.replace(/"/g,'&quot;')}" style="width:15px;height:15px;accent-color:var(--brand)" onchange="toggleBatchCategory(this)"/>
+            <span class="bold text-sm" style="flex:1">📚 ${cat}</span>
+            <span class="text-muted" style="font-size:11px">${byCat[cat].length} 課</span>
+          </div>
+          ${byCat[cat].map(c=>`
+            <label class="batch-course-item" data-name="${c.name.toLowerCase().replace(/"/g,'&quot;')}" data-cat="${cat.replace(/"/g,'&quot;')}" style="display:flex;align-items:center;gap:8px;padding:6px 8px 6px 24px;cursor:pointer;font-size:13px">
+              <input type="checkbox" class="batch-course-cb" data-id="${c.id}" style="width:15px;height:15px;accent-color:var(--brand)"/>
+              <span style="flex:1">${c.name}</span>
+              <span class="text-muted" style="font-size:11px">${(c.wordCount!=null?c.wordCount:'')}</span>
+            </label>`).join('')}
+        </div>`).join('')}
+    </div>
+    <div id="batch-msg" style="font-size:13px;margin-top:8px"></div>
+    <div class="flex gap8 mt8">
+      <button class="btn btn-p" style="flex:1" onclick="runBatchAssign(this)">指派選取課程</button>
+      <button class="btn" style="flex:1" onclick="this.closest('[style*=fixed]').remove()">取消</button>
+    </div>
+  </div>`;
+  document.body.appendChild(modal);
+};
+window.filterBatchCourses=function(q){
+  q=(q||'').toLowerCase().trim();
+  document.querySelectorAll('.batch-course-item').forEach(el=>{
+    el.style.display=(!q||el.dataset.name.includes(q))?'flex':'none';
+  });
+};
+window.toggleAllBatchCourses=function(checked){
+  document.querySelectorAll('.batch-course-cb').forEach(cb=>{
+    const item=cb.closest('.batch-course-item');
+    if(item&&item.style.display!=='none') cb.checked=checked;
+  });
+  document.querySelectorAll('.batch-cat-cb').forEach(cb=>cb.checked=checked);
+};
+window.toggleBatchCategory=function(cb){
+  const cat=cb.dataset.cat;
+  document.querySelectorAll(`.batch-course-cb`).forEach(c=>{
+    const item=c.closest('.batch-course-item');
+    if(item&&item.dataset.cat===cat) c.checked=cb.checked;
+  });
+};
+window.runBatchAssign=async function(btn){
+  const modal=btn.closest('[style*=fixed]');
+  const targetCid=modal.querySelector('#batch-target-class').value;
+  const checked=[...modal.querySelectorAll('.batch-course-cb:checked')];
+  const msg=modal.querySelector('#batch-msg');
+  if(!targetCid){msg.style.color='var(--danger)';msg.textContent='請選擇目標班級';return;}
+  if(!checked.length){msg.style.color='var(--danger)';msg.textContent='請至少勾選一個課程';return;}
+  msg.style.color='var(--muted)';msg.textContent=`指派中... 0/${checked.length}`;
+  const allCourses=await getAll('courses');
+  let done=0;
+  for(const cb of checked){
+    const cid=cb.dataset.id;
+    const c=allCourses.find(x=>x.id===cid);
+    if(!c)continue;
+    const existing=Array.isArray(c.classIds)?c.classIds:(c.classId?[c.classId]:[]);
+    if(!existing.includes(targetCid)){
+      const newIds=[...existing,targetCid];
+      await updateOne('courses',cid,{classIds:newIds,classId:null});
+      const local=AC.find(x=>x.id===cid); if(local){local.classIds=newIds;}
+    }
+    done++; msg.textContent=`指派中... ${done}/${checked.length}`;
+  }
+  const cls=ALL_CLASSES.find(x=>x.id===targetCid);
+  msg.style.color='var(--success)';
+  msg.textContent=`✅ 已將 ${checked.length} 個課程指派給「${cls?(cls.displayName||cls.level+' '+cls.grade):targetCid}」`;
+  setTimeout(()=>{modal.remove();renderAdminCourses();},1200);
+};
+
+// Assign an entire category to a class (from the category group header)
+window.assignCategoryToClass=async function(category){
+  const allCourses=await getAll('courses');
+  const inCat=allCourses.filter(c=>getCourseCategory(c)===category);
+  if(!inCat.length){alert('此分類沒有課程');return;}
+  const classOpts=CLASS_PROGRESSION.map(cid=>{
+    const c=ALL_CLASSES.find(x=>x.id===cid);
+    return `${cid} = ${c?(c.displayName||c.level+' '+c.grade):cid}`;
+  }).join('\n');
+  const targetCid=prompt(`將「${category}」分類的 ${inCat.length} 個課程指派給哪個班級？\n\n請輸入班級 ID：\n${classOpts}`);
+  if(!targetCid)return;
+  const cls=ALL_CLASSES.find(x=>x.id===targetCid.trim());
+  if(!cls&&!CLASS_PROGRESSION.includes(targetCid.trim())){alert('找不到此班級 ID');return;}
+  const tid=targetCid.trim();
+  let done=0;
+  for(const c of inCat){
+    const existing=Array.isArray(c.classIds)?c.classIds:(c.classId?[c.classId]:[]);
+    if(!existing.includes(tid)){
+      const newIds=[...existing,tid];
+      await updateOne('courses',c.id,{classIds:newIds,classId:null});
+      const local=AC.find(x=>x.id===c.id); if(local){local.classIds=newIds;}
+    }
+    done++;
+  }
+  alert(`✅ 已將「${category}」的 ${inCat.length} 個課程指派給「${cls?(cls.displayName||cls.level+' '+cls.grade):tid}」`);
+  renderAdminCourses();
+};
+
 window.manageCourseClasses=async function(cid){
   const course=AC.find(c=>c.id===cid);if(!course)return;
   // get all existing classes
@@ -5264,6 +5513,7 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
   </div>
 
   <div id="at-accounts" style="display:none">
+    <div id="admin-notifications"></div>
     <div id="account-list"><div class="loading">載入中...</div></div>
   </div>
 
@@ -5334,11 +5584,17 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
 
   <div id="at-courses" style="display:none">
     <div class="notice notice-i mb8">目前班級：<span id="at-class-label" class="bold">（未選擇）</span><br>請先從「班級管理」進入各班級設定課程</div>
+    <div class="flex gap8 mb8">
+      <input id="course-search" class="mb0" placeholder="🔍 搜尋課程名稱..." style="flex:1" oninput="renderAdminCourses()"/>
+      <select id="course-group-mode" class="mb0" style="width:auto" onchange="setCourseGroupMode(this.value)">
+        <option value="none">不分組</option>
+        <option value="category">📚 依分類</option>
+        <option value="class">🏫 依班級</option>
+      </select>
+    </div>
     <div class="flex gap8 mb12">
-      <input id="course-search" class="mb0" placeholder="🔍 搜尋課程名稱..." style="flex:1"
-        oninput="renderAdminCourses()"/>
-      <button class="btn btn-sm" onclick="toggleCourseGrouping()" id="course-group-btn" style="white-space:nowrap">📂 依班級分組</button>
-      <button class="btn btn-sm" onclick="diagnoseCourseClasses()" style="white-space:nowrap;background:#fef3c7;border-color:#fbbf24;color:#92400e">⚠️ 診斷指派</button>
+      <button class="btn btn-sm btn-p" style="flex:1" onclick="openBatchAssign()">📦 批次指派課程</button>
+      <button class="btn btn-sm" onclick="diagnoseCourseClasses()" style="white-space:nowrap;background:#fef3c7;border-color:#fbbf24;color:#92400e">⚠️ 診斷</button>
     </div>
     <div id="admin-course-list"><div class="loading">載入中...</div></div>
     <button class="btn btn-p mt12" style="width:100%" onclick="toggleBox('nc2')">+ 新增課程</button>
