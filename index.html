@@ -400,10 +400,15 @@ function computeNewWordsForDate(dateStr) {
 }
 function getStudentTodayNewWordIds() {
   const plan = APP_SETTINGS.todayPlan;
-  if (plan?.wordIds?.length) return plan.wordIds;
+  const perDay = APP_SETTINGS.newWordsPerDay||20;
+  if (plan?.wordIds?.length) {
+    // Safety cap: even a manual plan should not exceed a sane daily limit,
+    // guarding against corrupt plans with hundreds of words.
+    const manualCap = Math.max(perDay * 3, 60);
+    return plan.wordIds.slice(0, manualCap);
+  }
   const joinDate = CU_DATA?.joinDate||APP_SETTINGS.startDate||todayStr();
   const startDate = APP_SETTINGS.startDate||todayStr();
-  const perDay = APP_SETTINGS.newWordsPerDay||20;
   const systemDayIdx = Math.max(0,Math.floor((new Date(todayStr())-new Date(startDate))/86400000));
   const joinDayIdx = Math.max(0,Math.floor((new Date(joinDate)-new Date(startDate))/86400000));
   const effectiveDayIdx = Math.max(systemDayIdx,joinDayIdx);
@@ -4731,7 +4736,9 @@ function renderTodayPlanPreview(){
   const ids=plan?.wordIds?.length?plan.wordIds:computeNewWordsForDate(today);
   const words=ids.map(id=>AW.find(w=>w.id===id)).filter(Boolean);
   const isManual=!!(plan?.wordIds?.length);
-  el.innerHTML=`<div class="flex gap8 mb8"><span class="bold text-sm">今日（${today}）新單字</span><span class="tag ${isManual?'tag-a':'tag-b'}">${isManual?'手動指定':'系統自動'}</span><span class="text-muted" style="font-size:12px;margin-left:auto">${words.length} 個</span></div><div style="display:flex;flex-wrap:wrap;gap:4px">${words.map(w=>`<span style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px 8px;font-size:12px">${w.en}</span>`).join('')}</div>`;
+  const perDay=APP_SETTINGS.newWordsPerDay||20;
+  const isExcessive=isManual&&plan.wordIds.length>perDay*2;
+  el.innerHTML=`<div class="flex gap8 mb8"><span class="bold text-sm">今日（${today}）新單字</span><span class="tag ${isManual?'tag-a':'tag-b'}">${isManual?'手動指定':'系統自動'}</span><span class="text-muted" style="font-size:12px;margin-left:auto">${words.length} 個</span></div>${isExcessive?`<div class="mb8" style="font-size:12px;background:var(--wl);border:1px solid #fcd34d;border-radius:8px;padding:10px 12px;color:#92400e">⚠️ 手動指定了 ${plan.wordIds.length} 個單字，遠超過每日 ${perDay} 個的設定。學生會一次面對大量單字。<button class="btn btn-sm mt8" style="width:100%" onclick="clearTodayPlan()">清除手動指定，恢復自動排程</button></div>`:''}<div style="display:flex;flex-wrap:wrap;gap:4px">${words.slice(0,80).map(w=>`<span style="background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:2px 8px;font-size:12px">${w.en}</span>`).join('')}${words.length>80?`<span style="font-size:12px;color:var(--muted)">...等 ${words.length} 個</span>`:''}</div>`;
 }
 function renderManualWordPicker(){
   const el=document.getElementById('manual-word-picker');if(!el)return;
@@ -4741,9 +4748,64 @@ function renderManualWordPicker(){
     ws.forEach(w=>{const row=document.createElement('label');row.style.cssText='display:flex;align-items:center;gap:6px;padding:3px 0;font-size:13px;cursor:pointer';row.innerHTML=`<input type="checkbox" data-wid="${w.id}" ${selected.has(w.id)?'checked':''} style="accent-color:var(--brand)"/> ${w.en} <span style="color:var(--muted);font-size:11px">${w.zh}</span>`;el.appendChild(row);});
   });
 }
+window.diagnoseStudentLoad=async function(){
+  const sid=(document.getElementById('diag-stu-id').value||'').trim();
+  const out=document.getElementById('diag-result');
+  if(!sid){out.innerHTML='<span style="color:var(--danger)">請輸入學生帳號</span>';return;}
+  out.innerHTML='<div class="loading">診斷中...</div>';
+  try{
+    const [user, acct] = await Promise.all([getOne('users',sid), getOne('accounts',sid)]);
+    if(!user){out.innerHTML='<span style="color:var(--danger)">找不到此學生資料</span>';return;}
+    const classes=acct?.classes||[];
+    const today=todayStr();
+    const sr=user.sr||{};
+    const known=user.known||{};
+    // Per-class breakdown
+    let html=`<div style="background:var(--bg);border-radius:8px;padding:10px 12px;line-height:1.8">`;
+    html+=`<div class="bold">${user.name||sid}（${classes.join(', ')||'無班級'}）</div>`;
+    html+=`<div>已學單字：${Object.keys(known).length}　SR 複習項目：${Object.keys(sr).length}</div>`;
+    // Count SR by due status
+    let dueToday=0, future=0, noDate=0;
+    const dueDates={};
+    Object.keys(sr).forEach(k=>{
+      const e=sr[k];
+      if(!e||!e.nextDate){noDate++;return;}
+      if(e.nextDate<=today){ dueToday++; dueDates[e.nextDate]=(dueDates[e.nextDate]||0)+1; }
+      else future++;
+    });
+    html+=`<div style="margin-top:6px"><b style="color:${dueToday>50?'var(--danger)':'var(--text)'}">到期待複習：${dueToday}</b>　未到期：${future}　無日期：${noDate}</div>`;
+    // Show the date distribution of overdue items
+    const sortedDates=Object.keys(dueDates).sort();
+    if(sortedDates.length){
+      html+=`<div style="margin-top:6px;font-size:12px;color:var(--muted)">到期日分布：${sortedDates.slice(0,10).map(d=>`${d}(${dueDates[d]})`).join('、')}${sortedDates.length>10?' …':''}</div>`;
+    }
+    // Check today's daily_plan for each class
+    html+=`<div style="margin-top:8px;border-top:1px solid var(--border);padding-top:8px"><b>各班今日計畫：</b></div>`;
+    for(const cid of classes){
+      const planDoc=await getOne('daily_plan', cid+'_'+today);
+      const settingsDoc=await getOne('class_settings', cid);
+      const perDay=settingsDoc?.newWordsPerDay||20;
+      const reviewCap=settingsDoc?.reviewCap||0;
+      const startDate=settingsDoc?.startDate||'(未設)';
+      html+=`<div style="font-size:12px;margin-top:4px">・${cid}：每日新字 ${perDay}、複習上限 ${reviewCap===0?'不限':reviewCap}、起始日 ${startDate}`;
+      if(planDoc?.wordIds?.length) html+=`　<span style="color:var(--danger)">手動計畫 ${planDoc.wordIds.length} 字</span>`;
+      else html+='　(自動排程)';
+      html+='</div>';
+    }
+    html+=`</div>`;
+    // Verdict
+    let verdict='';
+    if(dueToday>50) verdict=`<div style="margin-top:8px;color:var(--danger);font-weight:600">⚠️ 主因：有 ${dueToday} 個字同時到期複習。建議設定「每日複習上限」來分散。</div>`;
+    out.innerHTML=html+verdict;
+  }catch(e){
+    out.innerHTML='<span style="color:var(--danger)">診斷失敗：'+e.message+'</span>';
+  }
+};
 window.saveTodayPlan=async function(){
   const checked=[...document.querySelectorAll('#manual-word-picker input[type=checkbox]:checked')];
   const ids=checked.map(c=>c.dataset.wid);if(!ids.length){alert('請至少勾選一個單字');return;}
+  const perDay=APP_SETTINGS.newWordsPerDay||20;
+  if(ids.length>perDay*2 && !confirm(`你指定了 ${ids.length} 個單字，遠超過每日設定的 ${perDay} 個。\n學生今天會一次要學這麼多字，確定嗎？`))return;
   const today=todayStr();const cid=CURRENT_CLASS?.id||'global';
   await setOne('daily_plan',cid+'_'+today,{wordIds:ids,date:today,setBy:CU.id,setAt:Date.now()});
   APP_SETTINGS.todayPlan={wordIds:ids};
@@ -5283,6 +5345,15 @@ h2{font-size:18px;font-weight:700;margin-bottom:12px}h3{font-size:15px;font-weig
       <input type="number" id="setting-upgrade-accuracy" min="0" max="100" placeholder="例：80" class="mb8"/>
       <div class="text-muted mb12" style="font-size:12px">兩個條件都達到才會顯示「達標」標記。設為 0 表示不設此條件。</div>
       <button class="btn btn-p" style="width:100%;margin-bottom:8px" onclick="saveSettings()">儲存設定</button>
+    </div>
+    <h3 class="mb8">🔍 學生任務量診斷</h3>
+    <div class="card mb12">
+      <div class="text-muted mb8" style="font-size:13px">輸入學生帳號，查看他「今天」實際被安排了多少字、以及為什麼。</div>
+      <div class="flex gap8 mb8">
+        <input id="diag-stu-id" class="mb0" placeholder="學生帳號 例：bhcs00005" style="flex:1"/>
+        <button class="btn btn-p" onclick="diagnoseStudentLoad()">診斷</button>
+      </div>
+      <div id="diag-result" style="font-size:13px"></div>
     </div>
     <h3 class="mb8">今日任務預覽 / 手動指定</h3>
     <div class="card mb12">
