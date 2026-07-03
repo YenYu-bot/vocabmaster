@@ -213,6 +213,7 @@ window.doLogin = async function() {
       account = { id: doc.id, role: doc.role, name: doc.name, classes: doc.classes || [], assignedClasses: doc.assignedClasses || [] };
     }
     CU = account;
+    try{ localStorage.setItem('vm_session', JSON.stringify({id:CU.id})); }catch(e){}
     // load or create user learning data
     if (CU.role === 'student') {
       CU_DATA = await getOne('users', CU.id);
@@ -356,7 +357,7 @@ function renderClassSelector(classes) {
 }
 
 function showErr(el, msg) { el.style.display='block'; el.style.color='var(--danger)'; el.textContent=msg; }
-window.logout = function() { CU=null; CU_DATA=null; CURRENT_CLASS=null; AW=[]; AC=[]; showScreen('s-login'); };
+window.logout = function() { try{localStorage.removeItem('vm_session');}catch(e){} CU=null; CU_DATA=null; CURRENT_CLASS=null; AW=[]; AC=[]; showScreen('s-login'); };
 function showScreen(id) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   document.getElementById(id).classList.add('active');
@@ -1712,6 +1713,83 @@ function initSpeech(){
   window.speechSynthesis.onvoiceschanged = setVoice;
 }
 initSpeech();
+restoreSession();
+
+async function restoreSession(){
+  try{
+    const raw = localStorage.getItem('vm_session');
+    if(!raw) return;
+    const saved = JSON.parse(raw);
+    if(!saved || !saved.id) return;
+    await ensureSystemAdmin();
+    let account = null;
+    if (saved.id === SYSTEM_ADMIN.id) {
+      const doc = await getOne('accounts', saved.id);
+      account = doc ? { id: doc.id, role: doc.role||'admin', name: doc.name||'系統管理員', classes: doc.classes||[] }
+                    : { id: SYSTEM_ADMIN.id, role: 'admin', name: SYSTEM_ADMIN.name };
+    } else {
+      const doc = await getOne('accounts', saved.id);
+      if (!doc) { localStorage.removeItem('vm_session'); return; }
+      account = { id: doc.id, role: doc.role, name: doc.name, classes: doc.classes || [], assignedClasses: doc.assignedClasses || [] };
+    }
+    CU = account;
+    if (CU.role === 'student') {
+      CU_DATA = await getOne('users', CU.id);
+      if (!CU_DATA) {
+        const newData = { score:0, known:{}, sr:{}, completed_courses:[], daily_progress:{},
+          quiz_stats:{}, achievements:[], joinDate: todayStr(), createdAt: Date.now() };
+        await setOne('users', CU.id, newData);
+        CU_DATA = { id: CU.id, ...newData };
+      } else {
+        const missing = {};
+        if (!CU_DATA.known) missing.known = {};
+        if (!CU_DATA.sr) missing.sr = {};
+        if (!CU_DATA.completed_courses) missing.completed_courses = [];
+        if (!CU_DATA.daily_progress) missing.daily_progress = {};
+        if (!CU_DATA.quiz_stats) missing.quiz_stats = {};
+        if (!CU_DATA.achievements) missing.achievements = [];
+        if (!CU_DATA.joinDate) missing.joinDate = todayStr();
+        if (Object.keys(missing).length) {
+          await updateOne('users', CU.id, missing);
+          Object.assign(CU_DATA, missing);
+        }
+      }
+    }
+    ALL_CLASSES = await getAll('classes');
+    if (CU.role === 'student') {
+      for (const cid of (CU.classes||[])) {
+        if (!ALL_CLASSES.find(c=>c.id===cid)) {
+          const parts=cid.split('-');
+          const level=parts[0]||cid;
+          const grade=parts.slice(1).join('-')||cid;
+          const newCls={id:cid,level,grade,createdAt:Date.now()};
+          await setOne('classes',cid,newCls);
+          ALL_CLASSES.push(newCls);
+        }
+      }
+    }
+    if (CU.role === 'admin') {
+      const isSA = CU.id === 'bhcst0001';
+      document.getElementById('admin-name').textContent = CU.name + ' (' + CU.id + ')';
+      document.getElementById('admin-role-tag').textContent = isSA ? '超級管理員' : '一般老師';
+      document.getElementById('admin-role-tag').className = isSA ? 'tag tag-a' : 'tag tag-b';
+      await loadAllForAdmin();
+      showScreen('s-admin');
+      document.querySelectorAll('#s-admin .tab').forEach(tab=>{
+        if(tab.textContent.trim()==='帳號管理') tab.style.display = isSA ? '' : 'none';
+      });
+      const firstTab = isSA
+        ? document.querySelector('#s-admin .tab')
+        : document.querySelectorAll('#s-admin .tab')[1];
+      adminTab(isSA?'accounts':'classes', firstTab);
+    } else {
+      await enterStudentView();
+    }
+  }catch(e){
+    console.warn('session restore failed', e);
+    try{ localStorage.removeItem('vm_session'); }catch(e2){}
+  }
+}
 
 window.speakWord = function(word, btnId){
   if(!window.speechSynthesis||!word) return;
